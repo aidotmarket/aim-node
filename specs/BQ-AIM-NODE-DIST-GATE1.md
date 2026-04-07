@@ -1,6 +1,6 @@
 # BQ-AIM-NODE-DIST — AIM Node Distribution (Gate 1 Spec R2)
 
-**Revision:** R2 (addressing MP review mandates from R1)
+**Revision:** R3 (addressing MP review mandates from R1)
 **BQ Code:** BQ-AIM-NODE-DIST
 **Status:** Gate 1 IN_REVIEW
 
@@ -67,6 +67,40 @@ On first start (no keypair in `/data`), the management UI presents a **setup wiz
 
 ---
 
+
+---
+
+## Unlock Flow (Encrypted Keypair Restart)
+
+When setup is complete but the private key is encrypted with a passphrase, subsequent starts enter a **locked state**:
+
+### Detection
+- On startup, `ProcessStateStore` checks: keypair exists at `/data/keys/private.pem`? → `setup_complete = true`. Can it be loaded without passphrase? → `unlocked = true`. If encrypted → `unlocked = false`, `locked = true`.
+
+### Locked State Behavior
+- Management API starts and serves the SPA (port 8401) — always available
+- Provider and consumer **do not autostart** — blocked until unlock succeeds
+- `GET /api/mgmt/setup/status` returns `{setup_complete: true, locked: true, unlocked: false}`
+- SPA detects `locked: true` and redirects to `/unlock` page
+
+### Unlock Page
+- Single input: passphrase field
+- "Unlock Node" button → `POST /api/mgmt/unlock`
+- On success: passphrase held **in memory only** (never persisted to disk), private key decrypted, provider/consumer autostart based on config
+- On failure: 401 with error message, user retries
+
+### Unlock Endpoint
+
+| Page/Action | Method | Path | Request Body | Response (200) | Error |
+|---|---|---|---|---|---|
+| **Unlock** | POST | `/api/mgmt/unlock` | `{passphrase: string}` | `{unlocked: true}` | 401 wrong passphrase |
+| **Lock status** | GET | `/api/mgmt/setup/status` | — | `{setup_complete: bool, locked: bool, unlocked: bool, current_step: int}` | — |
+
+### Process-Start Semantics
+- `POST /api/mgmt/provider/start` and `/consumer/start` return **423 Locked** if `unlocked == false`
+- After successful unlock, if config `mode` includes provider/consumer, they autostart immediately
+- Passphrase is held in a `SecretStr` (Pydantic) in memory — zeroed on process exit, never logged
+
 ## Endpoint Matrix
 
 ### Management API (`/api/mgmt/` prefix, port 8401)
@@ -80,19 +114,33 @@ On first start (no keypair in `/data`), the management UI presents a **setup wiz
 | **Dashboard** | GET | `/api/mgmt/status` | — | `{node_id: string, fingerprint: string, mode: string, uptime_s: float, version: string, market_connected: bool, provider_running: bool, consumer_running: bool}` | — |
 | **Config: read** | GET | `/api/mgmt/config` | — | `{mode: string, api_url: string, api_key_set: bool, upstream_url?: string, data_dir: string}` | — |
 | **Config: update** | PUT | `/api/mgmt/config` | `{mode?: string, api_url?: string, api_key?: string, upstream_url?: string}` | `{ok: true, restart_required: bool}` | 422 validation |
-| **Provider: start** | POST | `/api/mgmt/provider/start` | — | `{started: true}` | 409 already running |
+| **Provider: start** | POST | `/api/mgmt/provider/start` | — | `{started: true}` | 409 already running, 423 locked |
 | **Provider: stop** | POST | `/api/mgmt/provider/stop` | — | `{stopped: true}` | 409 not running |
 | **Provider: health** | GET | `/api/mgmt/provider/health` | — | `{upstream_reachable: bool, latency_ms?: float, last_check: string}` | — |
-| **Consumer: start** | POST | `/api/mgmt/consumer/start` | — | `{started: true, proxy_port: int}` | 409 already running |
+| **Consumer: start** | POST | `/api/mgmt/consumer/start` | — | `{started: true, proxy_port: int}` | 409 already running, 423 locked |
 | **Consumer: stop** | POST | `/api/mgmt/consumer/stop` | — | `{stopped: true}` | 409 not running |
 | **Sessions: list** | GET | `/api/mgmt/sessions` | — | `{sessions: [{id, role, state, created_at, peer_fingerprint, bytes_transferred}]}` | — |
 | **Sessions: detail** | GET | `/api/mgmt/sessions/:id` | — | `{id, role, state, metering_events: [], latency_ms, error_count, created_at}` | 404 |
+| **Unlock node** | POST | `/api/mgmt/unlock` | `{passphrase: string}` | `{unlocked: true}` | 401 wrong passphrase |
 | **Keypair: info** | GET | `/api/mgmt/keypair` | — | `{fingerprint: string, algorithm: "Ed25519", created_at: string}` | 404 no keypair |
 
 ### Notes on Config Read
 - `api_key` is NEVER returned in any response — only `api_key_set: bool`
 - `passphrase` is NEVER stored or echoed — used only during keypair generation, then discarded
 - No raw credentials in any GET response
+
+---
+
+
+### Consumer Proxy Bind Strategy
+
+The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, this must change:
+
+- **Local dev / CLI mode:** `LocalProxy` binds `127.0.0.1:8400` (default, unchanged) — consumer proxy is local-only
+- **Docker / serve mode:** `LocalProxy` binds `0.0.0.0:8400` — required for Docker port publishing to work
+- **Implementation:** `ProcessManager.start_consumer()` passes `host` parameter based on `AIM_NODE_BIND_HOST` env var (default `127.0.0.1`, set to `0.0.0.0` in Dockerfile/docker-compose)
+- **docker-compose.yml** exposes both ports: `8401:8401` (management) and `8400:8400` (consumer proxy)
+- The `aim-node serve` command accepts `--bind-host` flag (default `0.0.0.0` for serve, `127.0.0.1` for consumer/provider commands)
 
 ---
 
@@ -223,5 +271,5 @@ On first start (no keypair in `/data`), the management UI presents a **setup wiz
 | 3 | Explicit security requirements | Non-root UID 1001, runtime-only secrets, volume ownership, no credential echo |
 | 4 | Reorder slices | State model → API contract → SPA → Docker → GHCR |
 | 5 | Multi-arch acceptance criteria | Explicit `docker buildx build --platform linux/amd64,linux/arm64` in AC #2 |
-| 6 | First-run/setup/unlock flow | 5-step wizard with setup status endpoint and SPA redirect |
-| 7 | Port strategy | 8401 rootless for management, 8400 for consumer proxy, no nginx |
+| 6 | First-run/setup/unlock flow | 5-step wizard + locked-state model with unlock endpoint, passphrase in-memory only, 423 on locked start |
+| 7 | Port strategy | 8401 rootless management, 8400 consumer proxy with explicit bind strategy (loopback local / 0.0.0.0 Docker) |
