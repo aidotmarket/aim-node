@@ -1,6 +1,6 @@
 # BQ-AIM-NODE-DIST — AIM Node Distribution (Gate 1 Spec R2)
 
-**Revision:** R5 (addressing MP review mandates from R1)
+**Revision:** R6 (addressing MP review mandates from R1)
 **BQ Code:** BQ-AIM-NODE-DIST
 **Status:** Gate 1 IN_REVIEW
 
@@ -34,7 +34,7 @@ This spec introduces a **new, separate** Starlette application: `ManagementApp` 
 
 ## First-Run / Setup / Unlock Flow
 
-On first start (no keypair in `/data`), the management UI presents a **setup wizard** before any other page is accessible:
+On first start (`setup_complete == false` in `/data/config.toml`, or config.toml missing), the management UI presents a **setup wizard** before any other page is accessible:
 
 ### Step 1: Welcome
 - Explains what aim-node is, what it will configure
@@ -72,7 +72,7 @@ On first start (no keypair in `/data`), the management UI presents a **setup wiz
 
 ## Unlock Flow (Encrypted Keypair Restart)
 
-When setup is complete but the private key is encrypted with a passphrase, subsequent starts enter a **locked state**:
+When `setup_complete == true` but the private key is encrypted with a passphrase, subsequent starts enter a **locked state**:
 
 ### Detection
 - On startup, `ProcessStateStore` checks two things independently:
@@ -95,7 +95,7 @@ When setup is complete but the private key is encrypted with a passphrase, subse
 See main endpoint matrix for `POST /api/mgmt/unlock` and `GET /api/mgmt/setup/status` schemas.
 
 ### Process-Start Semantics
-- `POST /api/mgmt/provider/start` and `/consumer/start` return **423 Locked** if `unlocked == false`
+- `POST /api/mgmt/provider/start` and `/consumer/start` return **412 Precondition Failed** if `setup_complete == false`, or **423 Locked** if `setup_complete == true && locked == true`
 - After successful unlock, if config `mode` includes provider/consumer, they autostart immediately
 - Passphrase is held in a `SecretStr` (Pydantic) in memory — never persisted to disk, never logged, garbage-collected on process exit
 
@@ -113,10 +113,10 @@ See main endpoint matrix for `POST /api/mgmt/unlock` and `GET /api/mgmt/setup/st
 | **Dashboard** | GET | `/api/mgmt/status` | — | `{node_id: string, fingerprint: string, mode: string, uptime_s: float, version: string, market_connected: bool, provider_running: bool, consumer_running: bool}` | — |
 | **Config: read** | GET | `/api/mgmt/config` | — | `{mode: string, api_url: string, api_key_set: bool, upstream_url?: string, data_dir: string}` | — |
 | **Config: update** | PUT | `/api/mgmt/config` | `{mode?: string, api_url?: string, api_key?: string, upstream_url?: string}` | `{ok: true, restart_required: bool}` | 422 validation |
-| **Provider: start** | POST | `/api/mgmt/provider/start` | — | `{started: true}` | 409 already running, 423 locked |
+| **Provider: start** | POST | `/api/mgmt/provider/start` | — | `{started: true}` | 409 already running, 423 locked, 412 setup incomplete |
 | **Provider: stop** | POST | `/api/mgmt/provider/stop` | — | `{stopped: true}` | 409 not running |
 | **Provider: health** | GET | `/api/mgmt/provider/health` | — | `{upstream_reachable: bool, latency_ms?: float, last_check: string}` | — |
-| **Consumer: start** | POST | `/api/mgmt/consumer/start` | — | `{started: true, proxy_port: int}` | 409 already running, 423 locked |
+| **Consumer: start** | POST | `/api/mgmt/consumer/start` | — | `{started: true, proxy_port: int}` | 409 already running, 423 locked, 412 setup incomplete |
 | **Consumer: stop** | POST | `/api/mgmt/consumer/stop` | — | `{stopped: true}` | 409 not running |
 | **Sessions: list** | GET | `/api/mgmt/sessions` | — | `{sessions: [{id, role, state, created_at, peer_fingerprint, bytes_transferred}]}` | — |
 | **Sessions: detail** | GET | `/api/mgmt/sessions/:id` | — | `{id, role, state, metering_events: [], latency_ms, error_count, created_at}` | 404 |
