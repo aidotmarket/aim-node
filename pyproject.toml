@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aim-node"
+version = "0.1.0"
+description = "AIM node core bootstrap package"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography",
+    "websockets",
+    "httpx",
+    "click",
+    "tomli",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+aim-node = "aim_node.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["aim_node*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
