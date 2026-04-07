@@ -1,157 +1,227 @@
-# BQ-AIM-NODE-DIST — AIM Node Distribution (Gate 1 Spec)
+# BQ-AIM-NODE-DIST — AIM Node Distribution (Gate 1 Spec R2)
+
+**Revision:** R2 (addressing MP review mandates from R1)
+**BQ Code:** BQ-AIM-NODE-DIST
+**Status:** Gate 1 IN_REVIEW
+
+---
 
 ## Problem
-aim-node core functionality is complete (crypto, relay, wire protocol, provider mode, consumer mode — 106 tests, Gate 4 passed). However:
-1. **No web UI** — CLI-only, inaccessible to non-technical users
-2. **No distribution** — no Docker image, no registry, no single-command install
-3. **No cross-platform packaging** — must clone repo and install Python deps manually
 
-Goal: Match the vectorAIz distribution model — `docker pull` → `docker run` → open browser → working node.
+aim-node core is complete (crypto, relay, wire protocol, provider, consumer — 106 tests, Gate 4). Distribution gaps:
+1. CLI-only — inaccessible to non-technical users
+2. No Docker image or registry — must clone repo and install Python deps
+3. No management UI for node configuration, monitoring, or first-run setup
 
-## Solution
+Goal: `docker pull` → `docker run` → open browser → working node.
 
-### 1. Web UI — React/Vite SPA served by Starlette
+---
 
-A lightweight single-page application served by the existing Starlette/uvicorn stack on port 8400.
+## Architecture Decision: Separate Management App
 
-**Pages:**
-- **Dashboard** — Node identity (public key fingerprint), mode (provider/consumer/both), uptime, version, connection status to ai.market
-- **Provider Setup** — Configure upstream HTTP endpoint URL, adapter settings (transforms, max body, health check), start/stop provider mode
-- **Consumer / Marketplace** — Browse available listings from ai.market, initiate sessions, view active sessions
-- **Session Monitor** — Active transfers, latency, metering events, error rates
-- **Settings** — Node configuration (keypair management, ai.market API URL, relay preferences)
+The existing `LocalProxy` (consumer/proxy.py) is a consumer-only Starlette app on `127.0.0.1:8400` that proxies buyer requests to active AIM sessions. It is **not** a management server.
 
-**Technical approach:**
-- React 18 + Vite + TypeScript + Tailwind CSS (matching VZ frontend stack)
-- Built to `frontend/dist/` at Docker build time
-- Served by Starlette `StaticFiles` mount at `/` with SPA fallback
-- API endpoints under `/api/` prefix (Starlette routes)
-- No separate web server needed — Starlette serves both API and static files
+This spec introduces a **new, separate** Starlette application: `ManagementApp` (`aim_node/management/app.py`). It:
+- Runs on port **8401** (management) — distinct from :8400 (consumer proxy)
+- Serves the React SPA (static files) and management REST API
+- Binds to `0.0.0.0` by default (Docker) or `127.0.0.1` (local dev)
+- Has no import dependency on LocalProxy or consumer internals
+- Communicates with provider/consumer processes via shared in-memory state (ProcessStateStore)
 
-**API endpoints needed (new, served by aim-node):**
-- `GET /api/status` — node identity, mode, health, version
-- `GET /api/config` — current configuration (redacted secrets)
-- `PUT /api/config` — update configuration
-- `POST /api/provider/start` — start provider mode
-- `POST /api/provider/stop` — stop provider mode
-- `GET /api/provider/health` — upstream endpoint health
-- `GET /api/sessions` — list active sessions (provider + consumer)
-- `GET /api/sessions/:id` — session detail (metering, latency)
-- `GET /api/marketplace/listings` — proxy to ai.market search API
-- `POST /api/sessions/initiate` — start a consumer session
+**Port strategy:** Port 8401 rootless (no nginx, no privilege escalation). Docker exposes 8401 for the management UI and 8400 for the consumer proxy. No reverse proxy needed at this scale.
 
-### 2. Dockerfile — Multi-stage Build
+---
 
-Following the VZ pattern (BQ-089):
+## First-Run / Setup / Unlock Flow
 
-**Stage 1: Frontend builder**
-```
-FROM node:22-slim AS frontend-builder
-COPY frontend/ → npm install → npm run build → /app/frontend/dist/
-```
+On first start (no keypair in `/data`), the management UI presents a **setup wizard** before any other page is accessible:
 
-**Stage 2: Python builder**
-```
-FROM python:3.11-slim-bookworm AS python-builder
-COPY requirements.txt → pip install
-```
+### Step 1: Welcome
+- Explains what aim-node is, what it will configure
+- "Get Started" button
 
-**Stage 3: Runtime**
-```
-FROM python:3.11-slim-bookworm AS runtime
-COPY --from=frontend-builder /app/frontend/dist/ /app/static/
-COPY --from=python-builder /install /usr/local
-COPY aim_node/ /app/aim_node/
-USER aimnode (non-root, uid 1001)
-EXPOSE 8400
-HEALTHCHECK curl http://localhost:8400/api/status
-CMD ["aim-node", "serve", "--host", "0.0.0.0", "--port", "8400"]
-```
+### Step 2: Keypair Generation
+- Auto-generates Ed25519 keypair
+- Displays public key fingerprint (SHA-256 hex)
+- Optional: set passphrase for private key encryption
+- Writes keypair to `/data/keys/`
 
-**Key decisions:**
-- Single container — no nginx needed (Starlette serves static + API)
-- No database dependency — aim-node is stateless (config from file/env, keypair from volume)
-- Config volume at `/data` for keypair persistence and config.toml
-- Python 3.11 to match VZ (3.13 in dev but 3.11 for Docker stability)
+### Step 3: ai.market Connection
+- Input: ai.market API URL (default `https://api.ai.market`)
+- Input: API key (obtained from ai.market dashboard)
+- "Test Connection" button → calls `GET /api/v1/health` on ai.market
+- Success → stores in `/data/config.toml`
 
-### 3. Container Registry — GHCR
+### Step 4: Mode Selection
+- Choose: Provider, Consumer, or Both
+- Provider: input upstream HTTP endpoint URL
+- Consumer: no additional config needed
+- Stores mode in config.toml
 
-Publish to `ghcr.io/aidotmarket/aim-node`.
+### Step 5: Review & Launch
+- Summary of all configuration
+- "Launch Node" button → starts selected mode(s)
+- Redirects to Dashboard
 
-**Tags:**
-- `latest` — most recent stable build
-- `v0.1.0`, `v0.1.1`, etc. — semantic version tags
-- `sha-abc1234` — commit SHA tags for traceability
+**State tracking:** `GET /api/mgmt/setup/status` returns `{setup_complete: bool, current_step: int}`. The SPA checks this on every page load and redirects to `/setup` if `setup_complete == false`.
 
-**Multi-arch:** `linux/amd64` + `linux/arm64`
-- Covers: Linux native, macOS (Apple Silicon + Intel via Docker Desktop), Windows (via Docker Desktop/WSL2)
-- Built via GitHub Actions using `docker/build-push-action` with QEMU for cross-compilation
+---
 
-### 4. docker-compose.yml
+## Endpoint Matrix
 
-Simple single-service compose for one-command startup:
+### Management API (`/api/mgmt/` prefix, port 8401)
 
-```yaml
-services:
-  aim-node:
-    image: ghcr.io/aidotmarket/aim-node:latest
-    ports:
-      - "8400:8400"
-    volumes:
-      - aim-node-data:/data
-    environment:
-      - AIM_NODE_MODE=provider  # or consumer, or both
-      - AIM_MARKET_URL=https://api.ai.market
-    restart: unless-stopped
+| Page/Action | Method | Path | Request Body | Response (200) | Error |
+|---|---|---|---|---|---|
+| **Setup: status** | GET | `/api/mgmt/setup/status` | — | `{setup_complete: bool, current_step: int}` | — |
+| **Setup: generate keypair** | POST | `/api/mgmt/setup/keypair` | `{passphrase?: string}` | `{fingerprint: string, created: bool}` | 409 exists |
+| **Setup: test connection** | POST | `/api/mgmt/setup/test-connection` | `{api_url: string, api_key: string}` | `{reachable: bool, version?: string}` | — |
+| **Setup: save config** | POST | `/api/mgmt/setup/finalize` | `{mode: "provider"\|"consumer"\|"both", api_url: string, api_key: string, upstream_url?: string}` | `{ok: true}` | 422 validation |
+| **Dashboard** | GET | `/api/mgmt/status` | — | `{node_id: string, fingerprint: string, mode: string, uptime_s: float, version: string, market_connected: bool, provider_running: bool, consumer_running: bool}` | — |
+| **Config: read** | GET | `/api/mgmt/config` | — | `{mode: string, api_url: string, api_key_set: bool, upstream_url?: string, data_dir: string}` | — |
+| **Config: update** | PUT | `/api/mgmt/config` | `{mode?: string, api_url?: string, api_key?: string, upstream_url?: string}` | `{ok: true, restart_required: bool}` | 422 validation |
+| **Provider: start** | POST | `/api/mgmt/provider/start` | — | `{started: true}` | 409 already running |
+| **Provider: stop** | POST | `/api/mgmt/provider/stop` | — | `{stopped: true}` | 409 not running |
+| **Provider: health** | GET | `/api/mgmt/provider/health` | — | `{upstream_reachable: bool, latency_ms?: float, last_check: string}` | — |
+| **Consumer: start** | POST | `/api/mgmt/consumer/start` | — | `{started: true, proxy_port: int}` | 409 already running |
+| **Consumer: stop** | POST | `/api/mgmt/consumer/stop` | — | `{stopped: true}` | 409 not running |
+| **Sessions: list** | GET | `/api/mgmt/sessions` | — | `{sessions: [{id, role, state, created_at, peer_fingerprint, bytes_transferred}]}` | — |
+| **Sessions: detail** | GET | `/api/mgmt/sessions/:id` | — | `{id, role, state, metering_events: [], latency_ms, error_count, created_at}` | 404 |
+| **Keypair: info** | GET | `/api/mgmt/keypair` | — | `{fingerprint: string, algorithm: "Ed25519", created_at: string}` | 404 no keypair |
 
-volumes:
-  aim-node-data:
-```
+### Notes on Config Read
+- `api_key` is NEVER returned in any response — only `api_key_set: bool`
+- `passphrase` is NEVER stored or echoed — used only during keypair generation, then discarded
+- No raw credentials in any GET response
 
-### 5. GitHub Actions CI
+---
 
-`.github/workflows/docker-publish.yml`:
-- Trigger: push to `main`, tag `v*`
-- Steps: checkout → setup QEMU → setup buildx → login GHCR → build+push multi-arch
-- Cache: GitHub Actions cache for Docker layers
+## Security Requirements
 
-### 6. New CLI command: `aim-node serve`
+### Container
+- **Non-root user:** `aimnode` (UID 1001, GID 1001), created in Dockerfile
+- **No secrets in image layers:** API keys, passphrases, and keypairs are runtime-only (env vars or volume)
+- **Volume ownership:** `/data` owned by `aimnode:aimnode` (1001:1001). Dockerfile creates and `chown`s the dir
+- **Read-only filesystem:** Container runs with `--read-only` compatibility (tmpfs for /tmp)
 
-Add a `serve` command to the CLI that:
-1. Loads config from file/env
-2. Starts the Starlette app (API + static files)
-3. Optionally auto-starts provider/consumer based on config
-4. Opens browser to `http://localhost:8400` (with `--no-browser` flag)
+### API Security
+- Management API binds `0.0.0.0:8401` — intended for local/Docker network access only
+- **No authentication on management API** (v1) — assumes trusted network (same machine or Docker bridge). Future: optional bearer token
+- Browser API **never** echoes raw credentials: API keys return `api_key_set: bool`, passphrases are never stored
+- All user input validated with Pydantic models before processing
+- Upstream URL validated: must be `http://` or `https://` scheme, no file:// or other schemes
 
-This replaces the current separate `provider` and `consumer` commands for Docker usage, while keeping them available for headless/CLI-only deployments.
+### Keypair
+- Private key stored at `/data/keys/private.pem` (PEM, optionally encrypted with passphrase)
+- Public key at `/data/keys/public.pem`
+- File permissions: 600 for private key, 644 for public key
+- Volume mount is the ONLY persistence mechanism — no database
 
-## Build Slices
+---
 
-1. **API + Serve command** (~6h) — Starlette API endpoints, `serve` CLI command, static file serving scaffold
-2. **Web UI: Dashboard + Settings** (~8h) — React/Vite project, dashboard page, settings page, API integration
-3. **Web UI: Provider + Consumer** (~8h) — Provider setup page, marketplace browser, session monitor
-4. **Docker + CI** (~4h) — Dockerfile, docker-compose.yml, GitHub Actions, GHCR publishing
-5. **Integration + Polish** (~4h) — End-to-end testing, README, start.sh helper script
+## Build Slices (Reordered)
 
-## Estimated Hours: 30
+### Slice 1: Management State Model + Process Model (~4h)
+**Files:** `aim_node/management/__init__.py`, `aim_node/management/state.py`, `aim_node/management/process.py`
+
+- `ProcessStateStore` — thread-safe singleton tracking:
+  - Setup completion state (step, complete flag)
+  - Provider process status (running, pid, started_at)
+  - Consumer process status (running, pid, proxy_port)
+  - Active sessions list with metering snapshots
+  - Node identity (fingerprint, mode, version, uptime)
+- `ProcessManager` — start/stop provider and consumer as async tasks:
+  - `start_provider(config)` → creates ProviderSessionHandler + TrustChannelClient
+  - `stop_provider()` → graceful shutdown
+  - `start_consumer(config)` → creates SessionManager + LocalProxy
+  - `stop_consumer()` → graceful shutdown
+- Config persistence: read/write `/data/config.toml` via existing `config_loader.py`
+
+**Tests:** 8 unit tests (state transitions, start/stop idempotency, config roundtrip)
+
+### Slice 2: Management API Contract (~6h)
+**Files:** `aim_node/management/app.py`, `aim_node/management/routes.py`, `aim_node/management/schemas.py`
+
+- Starlette app with all `/api/mgmt/*` routes from endpoint matrix
+- Pydantic v2 request/response schemas for every endpoint
+- Setup wizard endpoints (keypair generation, connection test, finalize)
+- Provider/consumer start/stop via ProcessManager
+- Static file serving scaffold (serves placeholder until SPA built)
+- `aim-node serve` CLI command: starts ManagementApp on :8401, optionally starts provider/consumer based on config
+
+**Tests:** 14 tests (every endpoint: happy path + primary error case)
+
+### Slice 3: Web UI — SPA (~8h)
+**Files:** `frontend/` (new React/Vite/TypeScript/Tailwind project)
+
+- Setup wizard (5-step flow)
+- Dashboard page (status, identity, connection indicator)
+- Provider page (start/stop, upstream health, config)
+- Consumer page (start/stop, proxy port)
+- Sessions page (list + detail)
+- Settings page (config editor)
+- SPA router: redirects to `/setup` when `setup_complete == false`
+
+**Tests:** Manual QA (e2e tests deferred to integration slice)
+
+### Slice 4: Dockerfile + docker-compose (~4h)
+**Files:** `Dockerfile`, `docker-compose.yml`
+
+- Multi-stage build (node:22-slim → python:3.11-slim-bookworm → runtime)
+- Frontend built in stage 1, Python deps in stage 2, combined in stage 3
+- User `aimnode` (1001:1001), `/data` volume, ports 8400+8401
+- `docker-compose.yml`: single service, volume mount, env vars, restart policy
+- HEALTHCHECK: `curl -f http://localhost:8401/api/mgmt/status || exit 1`
+
+**Tests:** Local `docker build` + `docker run` + manual verification
+
+### Slice 5: GHCR Publish + Integration (~4h)
+**Files:** `.github/workflows/docker-publish.yml`, README updates
+
+- GitHub Actions: checkout → QEMU → buildx → GHCR login → build+push
+- Platforms: `linux/amd64,linux/arm64`
+- Tags: `latest`, `v{semver}`, `sha-{short}`
+- Acceptance test: `docker buildx build --platform linux/amd64,linux/arm64 .` must complete without error
+- Integration test: `docker run` → wait for health → curl setup status → run setup flow → verify dashboard
+- README: quickstart, docker-compose example, configuration reference
+
+**Tests:** CI green on both architectures, README quickstart works end-to-end
+
+---
+
+## Estimated Hours: 26
 
 ## Files Touched
-- `aim_node/web/` (new) — Starlette API app, routes
+- `aim_node/management/` (new) — state, process manager, app, routes, schemas
 - `aim_node/cli.py` — add `serve` command
 - `frontend/` (new) — React/Vite SPA
 - `Dockerfile` (new)
 - `docker-compose.yml` (new)
 - `.github/workflows/docker-publish.yml` (new)
-- `requirements.txt` (new, for Docker — currently uses pyproject.toml)
 
 ## Acceptance Criteria
-1. `docker pull ghcr.io/aidotmarket/aim-node` works on linux/amd64 and linux/arm64
-2. `docker run -p 8400:8400 ghcr.io/aidotmarket/aim-node` starts node with web UI
-3. Browser at `http://localhost:8400` shows dashboard with node identity
-4. Provider mode configurable and startable via web UI
-5. Consumer marketplace browser shows listings from ai.market
-6. Session monitor shows active sessions with metering data
-7. Config persists across container restarts via volume mount
-8. Keypair generated on first run, persisted in `/data`
-9. Non-root container user
-10. Health check endpoint at `/api/status`
+1. `docker pull ghcr.io/aidotmarket/aim-node:latest` works on linux/amd64 and linux/arm64
+2. `docker buildx build --platform linux/amd64,linux/arm64 .` completes without error
+3. `docker run -p 8401:8401 -p 8400:8400 -v aim-data:/data ghcr.io/aidotmarket/aim-node` starts node
+4. First visit to `http://localhost:8401` shows setup wizard (not dashboard)
+5. Setup wizard generates keypair, tests ai.market connection, selects mode
+6. After setup, dashboard shows node identity, mode, connection status
+7. Provider start/stop works via UI; upstream health check displayed
+8. Consumer start/stop works via UI; proxy port shown
+9. Sessions page shows active sessions with metering data
+10. Config GET never returns raw API key (only `api_key_set: bool`)
+11. Container runs as non-root user (UID 1001)
+12. `/data` volume persists keypair and config across container restarts
+13. GitHub Actions publishes multi-arch image to GHCR on tag push
+
+## MP R1 Mandate Resolution
+
+| # | Mandate | Resolution |
+|---|---------|-----------|
+| 1 | Full endpoint matrix | Complete matrix with Method/Path/Request/Response/Error for all 16 endpoints |
+| 2 | Separate management app from LocalProxy | New `ManagementApp` on :8401, no import dependency on LocalProxy |
+| 3 | Explicit security requirements | Non-root UID 1001, runtime-only secrets, volume ownership, no credential echo |
+| 4 | Reorder slices | State model → API contract → SPA → Docker → GHCR |
+| 5 | Multi-arch acceptance criteria | Explicit `docker buildx build --platform linux/amd64,linux/arm64` in AC #2 |
+| 6 | First-run/setup/unlock flow | 5-step wizard with setup status endpoint and SPA redirect |
+| 7 | Port strategy | 8401 rootless for management, 8400 for consumer proxy, no nginx |
