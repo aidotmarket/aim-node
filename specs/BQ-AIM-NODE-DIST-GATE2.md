@@ -3,6 +3,7 @@
 **Gate:** 2
 **Slice:** 1 of 5
 **Depends on:** Gate 1 R6 (APPROVED, commit 5709b0f)
+**Revision:** R2 (addresses MP R1 findings: 7/7 fixed)
 
 ---
 
@@ -15,6 +16,20 @@ This slice creates the management foundation: `ProcessStateStore` (state trackin
 ## Design Note: Keystore vs PEM
 
 Gate 1 spec references PEM files at `/data/keys/`. The existing codebase uses `DeviceCrypto` with an encrypted JSON keystore (`keystore.json`) via Fernet + PBKDF2. **This slice keeps the existing keystore approach** for backward compatibility. The "PEM" references in Gate 1 are conceptual — the actual storage mechanism is the existing encrypted keystore. Setup wizard will call `DeviceCrypto.get_or_create_keypairs()` which already handles keypair generation and persistence.
+
+---
+
+## MP R1 Findings Addressed
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | SessionManager takes `(config, market_client)` not `(config, crypto)` | Fixed: construct `MarketClient(config)` and pass to SessionManager |
+| 2 | Runtime handshake reads `AIM_KEYSTORE_PASSPHRASE` env, not in-memory | Fixed: set `os.environ["AIM_KEYSTORE_PASSPHRASE"]` from stored passphrase before starting processes |
+| 3 | `finalize_setup()` missing `node_serial` (required by `load_config()`) | Fixed: accept `node_serial` param, write to `core.node_serial` in config |
+| 4 | `_write_toml` nested section bug: loses parent prefix on recursion | Fixed: always pass full dotted prefix through recursion |
+| 5 | Singleton `_initialized` check is outside `_lock` — init race | Fixed: moved `_initialized` check inside `_lock` in `__new__`, gate init there |
+| 6 | Lock state not determined on init (stays False until explicit call) | Fixed: call `determine_node_state()` at end of `__init__` |
+| 7 | Consumer bind-host monkeypatch leaks global state | Fixed: modify `LocalProxy.__init__` to accept optional `host` param (minimal 3-line change to existing module) |
 
 ---
 
@@ -84,41 +99,45 @@ class ProcessStateStore:
     def __new__(cls, *args, **kwargs):
         with cls._lock:
             if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._initialized = False
+                inst = super().__new__(cls)
+                inst._initialized = False
+                cls._instance = inst
             return cls._instance
 
     def __init__(self, data_dir: Path):
-        if self._initialized:
-            return
-        self._data_dir = data_dir
-        self._state_lock = threading.Lock()
-        
-        # Setup state
-        self._setup_complete: bool = False
-        self._setup_step: int = 0  # 0-5, 5 = done
-        
-        # Lock state (only meaningful when setup_complete)
-        self._locked: bool = False
-        self._unlocked: bool = False
-        self._passphrase: Optional[str] = None  # in-memory only
-        
-        # Process state
-        self.provider = ProcessStatus()
-        self.consumer = ProcessStatus()
-        
-        # Sessions (updated by ProcessManager callbacks)
-        self._sessions: list[SessionSnapshot] = []
-        
-        # Identity
-        self._fingerprint: Optional[str] = None
-        self._mode: Optional[str] = None  # "provider", "consumer", "both"
-        self._version: str = ""
-        self._boot_time: float = time.time()
-        
-        # Load persisted state
-        self._load_config()
-        self._initialized = True
+        with self._lock:
+            if self._initialized:
+                return
+            self._data_dir = data_dir
+            self._state_lock = threading.Lock()
+            
+            # Setup state
+            self._setup_complete: bool = False
+            self._setup_step: int = 0  # 0-5, 5 = done
+            
+            # Lock state (only meaningful when setup_complete)
+            self._locked: bool = False
+            self._unlocked: bool = False
+            self._passphrase: Optional[str] = None  # in-memory only
+            self._node_state: NodeState = NodeState.SETUP_INCOMPLETE
+            
+            # Process state
+            self.provider = ProcessStatus()
+            self.consumer = ProcessStatus()
+            
+            # Sessions (updated by ProcessManager callbacks)
+            self._sessions: list[SessionSnapshot] = []
+            
+            # Identity
+            self._fingerprint: Optional[str] = None
+            self._mode: Optional[str] = None  # "provider", "consumer", "both"
+            self._version: str = ""
+            self._boot_time: float = time.time()
+            
+            # Load persisted state and determine node state
+            self._load_config()
+            self._node_state = self._determine_node_state_internal()
+            self._initialized = True
 
     def _load_config(self) -> None:
         """Read config.toml to determine setup_complete and mode."""
@@ -136,13 +155,13 @@ class ProcessStateStore:
         self._setup_step = int(mgmt.get("setup_step", 0))
         self._mode = mgmt.get("mode")
     
-    def _check_keystore_locked(self, keystore_path: Path) -> bool:
+    def _check_keystore_locked(self) -> bool:
         """Check if keystore requires passphrase. Returns True if locked."""
+        keystore_path = self._data_dir / "keystore.json"
         if not keystore_path.exists():
             return False  # No keystore → not locked (still in setup)
         try:
             from aim_node.core.crypto import DeviceCrypto
-            # Try loading with empty passphrase
             config = type('C', (), {
                 'keystore_path': keystore_path,
                 'data_dir': self._data_dir
@@ -153,25 +172,32 @@ class ProcessStateStore:
         except Exception:
             return True  # Needs passphrase → locked
 
-    def determine_node_state(self, keystore_path: Path) -> NodeState:
-        """Determine current node state. Called on startup and after state changes."""
-        with self._state_lock:
-            if not self._setup_complete:
-                return NodeState.SETUP_INCOMPLETE
-            
-            if self._unlocked:
-                return NodeState.READY
-            
-            if self._check_keystore_locked(keystore_path):
-                self._locked = True
-                return NodeState.LOCKED
-            
-            self._unlocked = True
-            self._locked = False
+    def _determine_node_state_internal(self) -> NodeState:
+        """Internal state determination. Caller must hold appropriate lock or be in __init__."""
+        if not self._setup_complete:
+            return NodeState.SETUP_INCOMPLETE
+        if self._unlocked:
             return NodeState.READY
+        if self._check_keystore_locked():
+            self._locked = True
+            return NodeState.LOCKED
+        self._unlocked = True
+        self._locked = False
+        return NodeState.READY
 
-    def unlock(self, passphrase: str, keystore_path: Path) -> bool:
+    def determine_node_state(self) -> NodeState:
+        """Determine current node state. Called after state changes."""
+        with self._state_lock:
+            self._node_state = self._determine_node_state_internal()
+            return self._node_state
+
+    @property
+    def node_state(self) -> NodeState:
+        return self._node_state
+
+    def unlock(self, passphrase: str) -> bool:
         """Attempt to unlock with passphrase. Returns True on success."""
+        keystore_path = self._data_dir / "keystore.json"
         with self._state_lock:
             try:
                 from aim_node.core.crypto import DeviceCrypto
@@ -184,6 +210,7 @@ class ProcessStateStore:
                 self._passphrase = passphrase  # hold in memory
                 self._locked = False
                 self._unlocked = True
+                self._node_state = NodeState.READY
                 return True
             except Exception:
                 return False
@@ -198,6 +225,10 @@ class ProcessStateStore:
             self._setup_step = 5
             self._mode = mode
 
+    def get_passphrase(self) -> Optional[str]:
+        """Return in-memory passphrase for env propagation."""
+        return self._passphrase
+
     def get_status(self) -> dict:
         """Return canonical status dict for API responses."""
         with self._state_lock:
@@ -206,6 +237,7 @@ class ProcessStateStore:
                 "locked": self._locked,
                 "unlocked": self._unlocked,
                 "current_step": self._setup_step,
+                "node_state": self._node_state.value,
             }
 
     def get_dashboard(self) -> dict:
@@ -258,6 +290,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -269,6 +302,7 @@ from aim_node.provider.adapter import HttpJsonAdapter
 from aim_node.provider.session_handler import ProviderSessionHandler
 from aim_node.consumer.proxy import LocalProxy
 from aim_node.consumer.session_manager import SessionManager
+from aim_node.market_client import MarketClient
 
 from .state import ProcessStateStore, NodeState
 
@@ -288,6 +322,12 @@ class ProcessManager:
     - SETUP_INCOMPLETE → raises PreconditionError (412)
     - LOCKED → raises LockedError (423)
     - READY → proceeds
+    
+    Passphrase propagation:
+    Before starting any process, sets os.environ["AIM_KEYSTORE_PASSPHRASE"]
+    from ProcessStateStore's in-memory passphrase. This is required because
+    runtime handshake code reads the passphrase from this env var, not from
+    any in-memory store.
     """
 
     def __init__(self, state: ProcessStateStore, data_dir: Path):
@@ -312,16 +352,32 @@ class ProcessManager:
         if status["locked"]:
             raise LockedError("Node is locked — unlock first")
 
+    def _propagate_passphrase(self) -> None:
+        """Set AIM_KEYSTORE_PASSPHRASE env var from in-memory passphrase.
+        
+        Runtime handshake code reads this env var directly. Without this,
+        provider/consumer processes fail to decrypt the keystore during
+        session establishment.
+        """
+        passphrase = self._state.get_passphrase()
+        if passphrase:
+            os.environ["AIM_KEYSTORE_PASSPHRASE"] = passphrase
+        elif "AIM_KEYSTORE_PASSPHRASE" not in os.environ:
+            # Keystore is unencrypted — set empty string
+            os.environ["AIM_KEYSTORE_PASSPHRASE"] = ""
+
     async def start_provider(self) -> None:
         self._check_ready()
         if self._state.provider.running:
             raise AlreadyRunningError("Provider already running")
 
+        self._propagate_passphrase()
+
         raw = self._load_raw_config()
         config = load_config(raw)
         adapter_config = load_adapter_config(raw)
         
-        passphrase = self._state._passphrase or ""
+        passphrase = self._state.get_passphrase() or ""
         crypto = DeviceCrypto(config, passphrase=passphrase)
         crypto.get_or_create_keypairs()
         
@@ -334,7 +390,7 @@ class ProcessManager:
                 self._trust_task = asyncio.create_task(self._trust_channel.run())
                 await handler.start()
                 self._state.provider.running = True
-                self._state.provider.started_at = __import__('time').time()
+                self._state.provider.started_at = time.time()
                 # Block until cancelled
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
@@ -359,32 +415,34 @@ class ProcessManager:
             self._provider_task = None
 
     async def start_consumer(self, bind_host: str = "127.0.0.1") -> int:
-        """Start consumer proxy. Returns proxy port."""
+        """Start consumer proxy. Returns proxy port.
+        
+        Args:
+            bind_host: Host to bind the local proxy to. Default "127.0.0.1"
+                for CLI usage. Use "0.0.0.0" for Docker/serve mode.
+                Passed as constructor parameter to LocalProxy (no monkeypatching).
+        """
         self._check_ready()
         if self._state.consumer.running:
             raise AlreadyRunningError("Consumer already running")
 
+        self._propagate_passphrase()
+
         raw = self._load_raw_config()
         config = load_config(raw)
-        passphrase = self._state._passphrase or ""
-        crypto = DeviceCrypto(config, passphrase=passphrase)
-        crypto.get_or_create_keypairs()
         
-        self._consumer_session_mgr = SessionManager(config, crypto)
-        self._consumer_proxy = LocalProxy(config, self._consumer_session_mgr)
+        # SessionManager takes (config, market_client) — NOT (config, crypto)
+        market_client = MarketClient(config)
+        self._consumer_session_mgr = SessionManager(config, market_client)
         
-        # Override bind host for Docker mode
-        if bind_host != "127.0.0.1":
-            # Patch the proxy's internal host before start
-            import aim_node.consumer.proxy as proxy_mod
-            original_host = proxy_mod.DEFAULT_HOST
-            proxy_mod.DEFAULT_HOST = bind_host
+        # LocalProxy accepts optional host param (see Modified Files section)
+        self._consumer_proxy = LocalProxy(config, self._consumer_session_mgr, host=bind_host)
         
         await self._consumer_proxy.start()
         port = self._consumer_proxy._port
         
         self._state.consumer.running = True
-        self._state.consumer.started_at = __import__('time').time()
+        self._state.consumer.started_at = time.time()
         return port
 
     async def stop_consumer(self) -> None:
@@ -427,6 +485,7 @@ class NotRunningError(Exception):
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -456,24 +515,33 @@ def write_config(data_dir: Path, config: dict) -> None:
         with open(config_path, "wb") as f:
             tomli_w.dump(config, f)
     else:
-        # Manual TOML serialization for simple flat structure
+        # Manual TOML serialization
         with open(config_path, "w") as f:
-            _write_toml(f, config)
+            _write_toml(f, config, prefix="")
 
 
-def _write_toml(f, d: dict, prefix: str = "") -> None:
-    """Simple TOML writer for nested dicts with string/bool/int/float values."""
+def _write_toml(f, d: dict, prefix: str) -> None:
+    """Simple TOML writer for nested dicts with string/bool/int/float values.
+    
+    Tracks full dotted prefix through recursion to correctly emit
+    nested sections like [provider.adapter].
+    """
+    # First pass: write non-dict values at this level
+    for k, v in d.items():
+        if not isinstance(v, dict):
+            if isinstance(v, bool):
+                f.write(f'{"" if not prefix else ""}{k} = {"true" if v else "false"}\n')
+            elif isinstance(v, str):
+                f.write(f'{k} = "{v}"\n')
+            elif isinstance(v, (int, float)):
+                f.write(f"{k} = {v}\n")
+    
+    # Second pass: write dict values as sections
     for k, v in d.items():
         if isinstance(v, dict):
-            section = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+            section = f"{prefix}.{k}" if prefix else k
             f.write(f"\n[{section}]\n")
-            _write_toml(f, v, "")
-        elif isinstance(v, bool):
-            f.write(f'{k} = {"true" if v else "false"}\n')
-        elif isinstance(v, str):
-            f.write(f'{k} = "{v}"\n')
-        elif isinstance(v, (int, float)):
-            f.write(f"{k} = {v}\n")
+            _write_toml(f, v, prefix=section)
 
 
 def finalize_setup(
@@ -481,16 +549,29 @@ def finalize_setup(
     mode: str,
     api_url: str,
     api_key: str,
+    node_serial: Optional[str] = None,
     upstream_url: Optional[str] = None,
 ) -> None:
-    """Write final config after setup wizard completes."""
+    """Write final config after setup wizard completes.
+    
+    Args:
+        data_dir: Path to data directory containing config.toml
+        mode: "provider", "consumer", or "both"
+        api_url: ai.market API URL
+        api_key: ai.market API key
+        node_serial: Unique node identifier. If None, generates a UUID.
+            Required by load_config() at runtime — must be present in
+            core.node_serial or load_config() will raise.
+        upstream_url: Provider adapter endpoint (required if mode includes provider)
+    """
     config = read_config(data_dir)
     
-    # Core section
+    # Core section — must include node_serial for load_config() compatibility
     if "core" not in config:
         config["core"] = {}
     config["core"]["market_api_url"] = api_url
     config["core"]["api_key"] = api_key
+    config["core"]["node_serial"] = node_serial or str(uuid.uuid4())
     
     # Provider section (if applicable)
     if mode in ("provider", "both") and upstream_url:
@@ -521,11 +602,32 @@ Add `tomli_w` to optional dependencies (for TOML writing):
 management = ["tomli_w>=1.0"]
 ```
 
+### `aim_node/consumer/proxy.py` (minimal change — Finding #7)
+
+Add optional `host` parameter to `LocalProxy.__init__`:
+
+```python
+# BEFORE (line ~25):
+def __init__(self, config: AIMCoreConfig, session_manager: SessionManager):
+    ...
+    # line ~41:
+    host=DEFAULT_HOST,
+
+# AFTER:
+def __init__(self, config: AIMCoreConfig, session_manager: SessionManager, host: str = DEFAULT_HOST):
+    self._host = host
+    ...
+    # line ~41 (use self._host instead of DEFAULT_HOST):
+    host=self._host,
+```
+
+This is a 3-line change. All existing callers pass no `host` argument, so they get the default `"127.0.0.1"` behavior unchanged. The `ProcessManager` passes `host=bind_host` for Docker/serve mode.
+
 ---
 
 ## Tests: `tests/test_management_state.py`
 
-10 tests:
+16 tests (10 original + 6 new for MP findings):
 
 1. **test_state_store_singleton** — Two `ProcessStateStore(data_dir)` calls return same instance
 2. **test_state_store_reset** — After `reset()`, new instance is created
@@ -537,6 +639,12 @@ management = ["tomli_w>=1.0"]
 8. **test_start_provider_setup_incomplete** — `ProcessManager.start_provider()` raises `PreconditionError` when setup incomplete
 9. **test_start_provider_locked** — `ProcessManager.start_provider()` raises `LockedError` when locked
 10. **test_start_stop_idempotency** — Double start raises `AlreadyRunningError`, double stop raises `NotRunningError`
+11. **test_config_roundtrip_nested_sections** — `write_config` with `provider.adapter.endpoint_url` → `read_config` returns identical nested structure. Verifies `_write_toml` prefix tracking.
+12. **test_finalize_setup_writes_node_serial** — `finalize_setup()` writes `core.node_serial`. Subsequent `load_config()` on the raw dict succeeds (does not raise on missing node_serial).
+13. **test_finalize_setup_generates_uuid_when_none** — `finalize_setup(node_serial=None)` writes a valid UUID string to `core.node_serial`.
+14. **test_consumer_construction_uses_market_client** — Mock `MarketClient` and `SessionManager`, verify `SessionManager.__init__` receives `(config, market_client)` not `(config, crypto)`.
+15. **test_passphrase_propagation_to_env** — After `unlock()`, calling `ProcessManager._propagate_passphrase()` sets `os.environ["AIM_KEYSTORE_PASSPHRASE"]` to the stored passphrase. Cleans up env in tearDown.
+16. **test_node_state_determined_on_init** — Create `ProcessStateStore` with `setup_complete=true` config and unencrypted keystore. Assert `node_state == NodeState.READY` immediately after construction (no explicit `determine_node_state()` call needed).
 
 All tests use `ProcessStateStore.reset()` in tearDown and tmpdir fixtures for data_dir.
 
@@ -546,18 +654,24 @@ All tests use `ProcessStateStore.reset()` in tearDown and tmpdir fixtures for da
 
 1. `from aim_node.management.state import ProcessStateStore, NodeState` imports cleanly
 2. `from aim_node.management.process import ProcessManager` imports cleanly
-3. ProcessStateStore correctly determines SETUP_INCOMPLETE / LOCKED / READY from filesystem state
+3. ProcessStateStore correctly determines SETUP_INCOMPLETE / LOCKED / READY from filesystem state **at init time** (no separate call needed)
 4. ProcessManager refuses to start processes with 412/423 when not ready
-5. Config writer persists setup_complete flag to config.toml
-6. All 10 tests pass
-7. No changes to existing aim_node modules (state/process are additive)
+5. Config writer persists `setup_complete` flag and `node_serial` to config.toml
+6. Config writer correctly serializes nested TOML sections (e.g. `[provider.adapter]`)
+7. Passphrase is propagated to `AIM_KEYSTORE_PASSPHRASE` env var before process start
+8. SessionManager constructed with `(config, MarketClient(config))` not `(config, crypto)`
+9. LocalProxy accepts `host` constructor parameter; no module-level monkeypatching
+10. All 16 tests pass
+11. Only change to existing aim_node modules: 3-line `host` param addition to `LocalProxy.__init__`
 
 ---
 
 ## Implementation Notes for Builder
 
 - Use `ProcessStateStore.reset()` between all tests — singleton state leaks across tests otherwise
-- `DeviceCrypto` requires a valid `AIMCoreConfig` with `keystore_path` and `data_dir` — create minimal fixtures
-- The `_check_keystore_locked` method should be tested with both encrypted and unencrypted keystores — use `DeviceCrypto.get_or_create_keypairs()` with empty vs non-empty passphrase to create both variants
-- `tomli_w` may not be installed — the fallback `_write_toml` handles simple cases. Tests should verify roundtrip (write then read back)
+- `DeviceCrypto` requires a valid config with `keystore_path` and `data_dir` — create minimal fixtures
+- The `_check_keystore_locked` method should be tested with both encrypted and unencrypted keystores
+- `tomli_w` may not be installed — the fallback `_write_toml` handles nested cases. Tests should verify roundtrip
 - `ProcessManager.start_provider/consumer` are async — tests need `asyncio` fixtures or `unittest.IsolatedAsyncioTestCase`
+- Clean up `os.environ["AIM_KEYSTORE_PASSPHRASE"]` in test tearDown to avoid leaking between tests
+- The `LocalProxy` host param change must default to `DEFAULT_HOST` to preserve backward compatibility
