@@ -22,9 +22,10 @@ class LocalProxy:
     Local HTTP server on 127.0.0.1:8400 that proxies buyer requests to AIM sessions.
     """
 
-    def __init__(self, config: AIMCoreConfig, session_manager: SessionManager):
+    def __init__(self, config: AIMCoreConfig, session_manager: SessionManager, host: str = DEFAULT_HOST):
         self.config = config
         self._session_manager = session_manager
+        self._host = host
         self._port = int(os.environ.get("AIM_NODE_PORT", "8400"))
         self._app: Starlette | None = self._build_app()
         self._server: uvicorn.Server | None = None
@@ -38,7 +39,7 @@ class LocalProxy:
         self._app = app
         server_config = uvicorn.Config(
             app,
-            host=DEFAULT_HOST,
+            host=self._host,
             port=self._port,
             log_level="warning",
             loop="asyncio",
