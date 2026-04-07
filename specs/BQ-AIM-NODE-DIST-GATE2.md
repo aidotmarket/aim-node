@@ -3,7 +3,7 @@
 **Gate:** 2
 **Slice:** 1 of 5
 **Depends on:** Gate 1 R6 (APPROVED, commit 5709b0f)
-**Revision:** R2 (addresses MP R1 findings: 7/7 fixed)
+**Revision:** R3 (R2 + 2 MP R2 findings fixed)
 
 ---
 
@@ -302,7 +302,7 @@ from aim_node.provider.adapter import HttpJsonAdapter
 from aim_node.provider.session_handler import ProviderSessionHandler
 from aim_node.consumer.proxy import LocalProxy
 from aim_node.consumer.session_manager import SessionManager
-from aim_node.market_client import MarketClient
+from aim_node.core.market_client import MarketClient
 
 from .state import ProcessStateStore, NodeState
 
@@ -354,19 +354,19 @@ class ProcessManager:
 
     def _propagate_passphrase(self) -> None:
         """Set AIM_KEYSTORE_PASSPHRASE env var from in-memory passphrase.
-        
-        Runtime handshake code reads this env var directly. Without this,
-        provider/consumer processes fail to decrypt the keystore during
-        session establishment.
-        """
-        passphrase = self._state.get_passphrase()
-        if passphrase:
-            os.environ["AIM_KEYSTORE_PASSPHRASE"] = passphrase
-        elif "AIM_KEYSTORE_PASSPHRASE" not in os.environ:
-            # Keystore is unencrypted — set empty string
-            os.environ["AIM_KEYSTORE_PASSPHRASE"] = ""
+        Unconditionally overwrites to prevent stale secrets from prior runs."""
+        os.environ["AIM_KEYSTORE_PASSPHRASE"] = self._state.get_passphrase() or ""
 
-    async def start_provider(self) -> None:
+
+
+
+
+
+
+
+
+
+
         self._check_ready()
         if self._state.provider.running:
             raise AlreadyRunningError("Provider already running")
@@ -627,7 +627,7 @@ This is a 3-line change. All existing callers pass no `host` argument, so they g
 
 ## Tests: `tests/test_management_state.py`
 
-16 tests (10 original + 6 new for MP findings):
+17 tests (10 original + 7 new for MP findings):
 
 1. **test_state_store_singleton** — Two `ProcessStateStore(data_dir)` calls return same instance
 2. **test_state_store_reset** — After `reset()`, new instance is created
@@ -645,6 +645,7 @@ This is a 3-line change. All existing callers pass no `host` argument, so they g
 14. **test_consumer_construction_uses_market_client** — Mock `MarketClient` and `SessionManager`, verify `SessionManager.__init__` receives `(config, market_client)` not `(config, crypto)`.
 15. **test_passphrase_propagation_to_env** — After `unlock()`, calling `ProcessManager._propagate_passphrase()` sets `os.environ["AIM_KEYSTORE_PASSPHRASE"]` to the stored passphrase. Cleans up env in tearDown.
 16. **test_node_state_determined_on_init** — Create `ProcessStateStore` with `setup_complete=true` config and unencrypted keystore. Assert `node_state == NodeState.READY` immediately after construction (no explicit `determine_node_state()` call needed).
+17. **test_passphrase_env_overwrites_stale** — Set `os.environ["AIM_KEYSTORE_PASSPHRASE"] = "old_stale_value"`. Create state with empty passphrase. Call `_propagate_passphrase()`. Assert env var is now `""`, not `"old_stale_value"`. Confirms unconditional overwrite prevents stale secret leakage.
 
 All tests use `ProcessStateStore.reset()` in tearDown and tmpdir fixtures for data_dir.
 
@@ -661,7 +662,7 @@ All tests use `ProcessStateStore.reset()` in tearDown and tmpdir fixtures for da
 7. Passphrase is propagated to `AIM_KEYSTORE_PASSPHRASE` env var before process start
 8. SessionManager constructed with `(config, MarketClient(config))` not `(config, crypto)`
 9. LocalProxy accepts `host` constructor parameter; no module-level monkeypatching
-10. All 16 tests pass
+10. All 17 tests pass
 11. Only change to existing aim_node modules: 3-line `host` param addition to `LocalProxy.__init__`
 
 ---
