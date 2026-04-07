@@ -1,6 +1,6 @@
 # BQ-AIM-NODE-DIST — AIM Node Distribution (Gate 1 Spec R2)
 
-**Revision:** R4 (addressing MP review mandates from R1)
+**Revision:** R5 (addressing MP review mandates from R1)
 **BQ Code:** BQ-AIM-NODE-DIST
 **Status:** Gate 1 IN_REVIEW
 
@@ -75,7 +75,9 @@ On first start (no keypair in `/data`), the management UI presents a **setup wiz
 When setup is complete but the private key is encrypted with a passphrase, subsequent starts enter a **locked state**:
 
 ### Detection
-- On startup, `ProcessStateStore` checks: keypair exists at `/data/keys/private.pem`? → `setup_complete = true`. Can it be loaded without passphrase? → `unlocked = true`. If encrypted → `unlocked = false`, `locked = true`.
+- On startup, `ProcessStateStore` checks two things independently:
+  - **setup_complete:** `true` only when `/data/config.toml` contains `setup_complete = true` (written by `POST /api/mgmt/setup/finalize`). Keypair existence alone is NOT sufficient — a user who generated a keypair but didn't finish the wizard is still in setup.
+  - **locked:** Only evaluated when `setup_complete = true`. Checks if private key at `/data/keys/private.pem` is encrypted. If encrypted → `locked = true`, `unlocked = false` until `POST /api/mgmt/unlock` succeeds. If unencrypted → `locked = false`, `unlocked = true`.
 
 ### Locked State Behavior
 - Management API starts and serves the SPA (port 8401) — always available
@@ -103,6 +105,7 @@ See main endpoint matrix for `POST /api/mgmt/unlock` and `GET /api/mgmt/setup/st
 
 | Page/Action | Method | Path | Request Body | Response (200) | Error |
 |---|---|---|---|---|---|
+| **Health (always 200)** | GET | `/api/mgmt/health` | — | `{healthy: true, setup_complete: bool, locked: bool}` | — |
 | **Setup: status** | GET | `/api/mgmt/setup/status` | — | `{setup_complete: bool, locked: bool, unlocked: bool, current_step: int}` | — |
 | **Setup: generate keypair** | POST | `/api/mgmt/setup/keypair` | `{passphrase?: string}` | `{fingerprint: string, created: bool}` | 409 exists |
 | **Setup: test connection** | POST | `/api/mgmt/setup/test-connection` | `{api_url: string, api_key: string}` | `{reachable: bool, version?: string}` | — |
@@ -215,7 +218,7 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
 - Frontend built in stage 1, Python deps in stage 2, combined in stage 3
 - User `aimnode` (1001:1001), `/data` volume, ports 8400+8401
 - `docker-compose.yml`: single service, volume mount, env vars, restart policy
-- HEALTHCHECK: `curl -f http://localhost:8401/api/mgmt/status || exit 1`
+- HEALTHCHECK: `curl -f http://localhost:8401/api/mgmt/health || exit 1`
 
 **Tests:** Local `docker build` + `docker run` + manual verification
 
