@@ -40,6 +40,25 @@ class MockWebSocket:
         self.closed = True
 
 
+class HandshakeWebSocket(MockWebSocket):
+    def __init__(self, seller: HandshakeManager, buyer_pub) -> None:
+        super().__init__([])
+        self._seller = seller
+        self._buyer_pub = buyer_pub
+
+    async def recv(self) -> object:
+        if self.recv_messages:
+            return await super().recv()
+        if not self.sent_messages:
+            raise RuntimeError("no init message available")
+
+        init_dict = json.loads(self.sent_messages[0])
+        init_msg = type("Init", (), init_dict)
+        self._seller.verify_init(init_msg, "session-1", "buyer-1", self._buyer_pub)
+        accept = self._seller.create_accept("session-1", init_dict["ephemeral_pubkey"])
+        return json.dumps(accept.__dict__)
+
+
 def _new_handshake_manager(node_id: str) -> tuple[HandshakeManager, object, object]:
     priv, pub = DeviceCrypto.generate_ed25519_keypair()
     return HandshakeManager(node_id, priv, pub), priv, pub
@@ -106,12 +125,9 @@ def test_body_base64_encoding() -> None:
 
 @pytest.mark.asyncio
 async def test_relay_state_transitions(core_config, monkeypatch: pytest.MonkeyPatch) -> None:
-    buyer, _, buyer_pub = _new_handshake_manager("buyer-1")
+    transport_buyer, _, buyer_pub = _new_handshake_manager("buyer-1")
     seller, _, seller_pub = _new_handshake_manager("seller-1")
-    buyer_init = buyer.create_init("session-1")
-    seller.verify_init(buyer_init, "session-1", "buyer-1", buyer_pub)
-    seller_accept = seller.create_accept("session-1", buyer_init.ephemeral_pubkey)
-    ws = MockWebSocket([json.dumps(seller_accept.__dict__)])
+    ws = HandshakeWebSocket(seller, buyer_pub)
 
     async def fake_connect(url: str) -> MockWebSocket:
         assert url == "wss://relay.example"
@@ -123,7 +139,7 @@ async def test_relay_state_transitions(core_config, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("aim_node.relay.transport.websockets.connect", fake_connect)
     monkeypatch.setattr(RelayTransport, "_heartbeat_loop", fake_heartbeat)
 
-    transport = RelayTransport(core_config, buyer)
+    transport = RelayTransport(core_config, transport_buyer)
     assert transport.state is RelayState.DISCONNECTED
 
     await transport.connect(
@@ -165,9 +181,10 @@ async def test_backpressure_max_concurrent(core_config) -> None:
     async def fake_recv_frame() -> tuple[int, bytes]:
         blocker.set()
         await release.wait()
+        active_trace_id = next(iter(transport._pending_requests))
         response = ResponsePayload(
-            trace_id="trace-1",
-            sequence=1,
+            trace_id=active_trace_id,
+            sequence=1 if active_trace_id == "trace-1" else 2,
             content_type="application/json",
             body=b"{}",
             latency_ms=10,
@@ -200,18 +217,6 @@ async def test_backpressure_max_concurrent(core_config) -> None:
 
     release.set()
     await first
-
-    async def fake_recv_frame_second() -> tuple[int, bytes]:
-        response = ResponsePayload(
-            trace_id="trace-2",
-            sequence=2,
-            content_type="application/json",
-            body=b"{}",
-            latency_ms=11,
-        )
-        return 0x11, serialize_payload(response)
-
-    transport.recv_frame = fake_recv_frame_second  # type: ignore[method-assign]
     result = await second
 
     assert result.trace_id == "trace-2"
@@ -238,7 +243,7 @@ async def test_heartbeat_miss_counter(core_config) -> None:
 
     async def fake_sleep(seconds: float) -> None:
         sleep_calls["count"] += 1
-        if sleep_calls["count"] >= 6:
+        if sleep_calls["count"] >= 7:
             transport.state = RelayState.CLOSED
         return None
 
