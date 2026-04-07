@@ -84,9 +84,6 @@ class ProviderSessionHandler:
         payload = event.get("payload")
         source = payload if isinstance(payload, dict) else event
 
-        self._trust_channel.buyer_node_id = source.get("buyer_node_id")
-        self._trust_channel.buyer_ed25519_pubkey = source.get("buyer_ed25519_pubkey")
-
         if not self.adapter._healthy:
             logger.warning("Rejecting session negotiate while adapter is unhealthy")
             return

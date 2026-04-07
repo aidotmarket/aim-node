@@ -41,8 +41,7 @@ class TrustChannelClient:
         self._reconnect_max_delay_s = config.reconnect_max_delay_s
         self._reconnect_jitter = config.reconnect_jitter
         self._ws_url = config.market_ws_url.rstrip("/")
-        self.buyer_node_id: str | None = None
-        self.buyer_ed25519_pubkey: str | None = None
+        self._negotiations: dict[str, dict[str, Any]] = {}
 
         self.register_handler(SESSION_NEGOTIATE_ACTION, self._handle_session_negotiate)
 
@@ -182,10 +181,13 @@ class TrustChannelClient:
 
     async def _handle_session_negotiate(self, message: dict[str, Any]) -> None:
         payload = message.get("payload")
-        if isinstance(payload, dict):
-            source = payload
-        else:
-            source = message
+        source = payload if isinstance(payload, dict) else message
+        transfer_id = str(message.get("transfer_id", ""))
+        if transfer_id:
+            self._negotiations[transfer_id] = {
+                "buyer_node_id": source.get("buyer_node_id"),
+                "buyer_ed25519_pubkey": source.get("buyer_ed25519_pubkey"),
+            }
 
-        self.buyer_node_id = source.get("buyer_node_id")
-        self.buyer_ed25519_pubkey = source.get("buyer_ed25519_pubkey")
+    def pop_negotiation(self, transfer_id: str) -> dict[str, Any] | None:
+        return self._negotiations.pop(transfer_id, None)

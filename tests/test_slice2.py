@@ -50,14 +50,58 @@ async def test_trust_channel_session_negotiate_handler(core_config: AIMCoreConfi
     await client._dispatch_message(
         {
             "action": "SESSION_NEGOTIATE",
+            "transfer_id": "test-transfer-1",
             "buyer_node_id": "buyer-1",
             "buyer_ed25519_pubkey": "pubkey-xyz",
         }
     )
     await asyncio.sleep(0)
 
-    assert client.buyer_node_id == "buyer-1"
-    assert client.buyer_ed25519_pubkey == "pubkey-xyz"
+    assert client._negotiations["test-transfer-1"]["buyer_node_id"] == "buyer-1"
+    assert client._negotiations["test-transfer-1"]["buyer_ed25519_pubkey"] == "pubkey-xyz"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_negotiations(core_config: AIMCoreConfig) -> None:
+    client = TrustChannelClient(core_config)
+
+    await client._dispatch_message(
+        {
+            "action": "SESSION_NEGOTIATE",
+            "transfer_id": "test-transfer-1",
+            "buyer_node_id": "buyer-1",
+            "buyer_ed25519_pubkey": "pubkey-1",
+        }
+    )
+    await client._dispatch_message(
+        {
+            "action": "SESSION_NEGOTIATE",
+            "transfer_id": "test-transfer-2",
+            "buyer_node_id": "buyer-2",
+            "buyer_ed25519_pubkey": "pubkey-2",
+        }
+    )
+    await asyncio.sleep(0)
+
+    assert client._negotiations["test-transfer-1"] == {
+        "buyer_node_id": "buyer-1",
+        "buyer_ed25519_pubkey": "pubkey-1",
+    }
+    assert client._negotiations["test-transfer-2"] == {
+        "buyer_node_id": "buyer-2",
+        "buyer_ed25519_pubkey": "pubkey-2",
+    }
+
+    assert client.pop_negotiation("test-transfer-1") == {
+        "buyer_node_id": "buyer-1",
+        "buyer_ed25519_pubkey": "pubkey-1",
+    }
+    assert "test-transfer-1" not in client._negotiations
+    assert client.pop_negotiation("test-transfer-2") == {
+        "buyer_node_id": "buyer-2",
+        "buyer_ed25519_pubkey": "pubkey-2",
+    }
+    assert "test-transfer-2" not in client._negotiations
 
 
 def test_auth_service_init_with_config(core_config: AIMCoreConfig) -> None:
