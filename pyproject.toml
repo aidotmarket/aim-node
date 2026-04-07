@@ -11,6 +11,8 @@ dependencies = [
     "cryptography",
     "websockets",
     "httpx",
+    "starlette",
+    "uvicorn",
     "click",
     "tomli",
     "pydantic",
