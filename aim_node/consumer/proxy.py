@@ -133,10 +133,20 @@ class LocalProxy:
 
     @staticmethod
     def _map_status(code: int) -> int:
+        if code == 1000:
+            return 502
+        if code == 1001:
+            return 502
+        if code == 1002:
+            return 502
+        if code == 1003:
+            return 401
         if code == 1004:
             return 410
         if code == 1005:
             return 429
+        if code == 1006:
+            return 502
         if code == 1007:
             return 504
         if code == 1008:

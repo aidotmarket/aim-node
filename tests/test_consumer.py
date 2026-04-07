@@ -316,6 +316,10 @@ async def test_session_keepalive_runs_every_4_min(core_config, monkeypatch: pyte
 @pytest.mark.parametrize(
     ("code", "status_code"),
     [
+        (1000, 502),
+        (1001, 502),
+        (1002, 502),
+        (1003, 401),
         (1004, 410),
         (1005, 429),
         (1006, 502),
@@ -326,7 +330,7 @@ async def test_session_keepalive_runs_every_4_min(core_config, monkeypatch: pyte
         (1011, 502),
     ],
 )
-async def test_proxy_status_mapping_all_codes(core_config, code: int, status_code: int) -> None:
+async def test_proxy_status_mapping_complete(core_config, code: int, status_code: int) -> None:
     session_manager, client = _proxy_client(core_config)
     session_manager.invoke_error = SessionInvokeError(code, f"error-{code}")
 
