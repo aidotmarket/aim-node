@@ -1,6 +1,6 @@
 # BQ-AIM-NODE-DIST — AIM Node Distribution (Gate 1 Spec R2)
 
-**Revision:** R3 (addressing MP review mandates from R1)
+**Revision:** R4 (addressing MP review mandates from R1)
 **BQ Code:** BQ-AIM-NODE-DIST
 **Status:** Gate 1 IN_REVIEW
 
@@ -63,7 +63,7 @@ On first start (no keypair in `/data`), the management UI presents a **setup wiz
 - "Launch Node" button → starts selected mode(s)
 - Redirects to Dashboard
 
-**State tracking:** `GET /api/mgmt/setup/status` returns `{setup_complete: bool, current_step: int}`. The SPA checks this on every page load and redirects to `/setup` if `setup_complete == false`.
+**State tracking:** `GET /api/mgmt/setup/status` returns the canonical status object (see endpoint matrix). The SPA checks `setup_complete`, `locked`, and `unlocked` on every page load and redirects to `/setup` (incomplete), `/unlock` (locked), or dashboard (ready).
 
 ---
 
@@ -80,7 +80,7 @@ When setup is complete but the private key is encrypted with a passphrase, subse
 ### Locked State Behavior
 - Management API starts and serves the SPA (port 8401) — always available
 - Provider and consumer **do not autostart** — blocked until unlock succeeds
-- `GET /api/mgmt/setup/status` returns `{setup_complete: true, locked: true, unlocked: false}`
+- `GET /api/mgmt/setup/status` returns locked/unlocked fields (see endpoint matrix)
 - SPA detects `locked: true` and redirects to `/unlock` page
 
 ### Unlock Page
@@ -90,16 +90,12 @@ When setup is complete but the private key is encrypted with a passphrase, subse
 - On failure: 401 with error message, user retries
 
 ### Unlock Endpoint
-
-| Page/Action | Method | Path | Request Body | Response (200) | Error |
-|---|---|---|---|---|---|
-| **Unlock** | POST | `/api/mgmt/unlock` | `{passphrase: string}` | `{unlocked: true}` | 401 wrong passphrase |
-| **Lock status** | GET | `/api/mgmt/setup/status` | — | `{setup_complete: bool, locked: bool, unlocked: bool, current_step: int}` | — |
+See main endpoint matrix for `POST /api/mgmt/unlock` and `GET /api/mgmt/setup/status` schemas.
 
 ### Process-Start Semantics
 - `POST /api/mgmt/provider/start` and `/consumer/start` return **423 Locked** if `unlocked == false`
 - After successful unlock, if config `mode` includes provider/consumer, they autostart immediately
-- Passphrase is held in a `SecretStr` (Pydantic) in memory — zeroed on process exit, never logged
+- Passphrase is held in a `SecretStr` (Pydantic) in memory — never persisted to disk, never logged, garbage-collected on process exit
 
 ## Endpoint Matrix
 
@@ -107,7 +103,7 @@ When setup is complete but the private key is encrypted with a passphrase, subse
 
 | Page/Action | Method | Path | Request Body | Response (200) | Error |
 |---|---|---|---|---|---|
-| **Setup: status** | GET | `/api/mgmt/setup/status` | — | `{setup_complete: bool, current_step: int}` | — |
+| **Setup: status** | GET | `/api/mgmt/setup/status` | — | `{setup_complete: bool, locked: bool, unlocked: bool, current_step: int}` | — |
 | **Setup: generate keypair** | POST | `/api/mgmt/setup/keypair` | `{passphrase?: string}` | `{fingerprint: string, created: bool}` | 409 exists |
 | **Setup: test connection** | POST | `/api/mgmt/setup/test-connection` | `{api_url: string, api_key: string}` | `{reachable: bool, version?: string}` | — |
 | **Setup: save config** | POST | `/api/mgmt/setup/finalize` | `{mode: "provider"\|"consumer"\|"both", api_url: string, api_key: string, upstream_url?: string}` | `{ok: true}` | 422 validation |
@@ -138,9 +134,9 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
 
 - **Local dev / CLI mode:** `LocalProxy` binds `127.0.0.1:8400` (default, unchanged) — consumer proxy is local-only
 - **Docker / serve mode:** `LocalProxy` binds `0.0.0.0:8400` — required for Docker port publishing to work
-- **Implementation:** `ProcessManager.start_consumer()` passes `host` parameter based on `AIM_NODE_BIND_HOST` env var (default `127.0.0.1`, set to `0.0.0.0` in Dockerfile/docker-compose)
-- **docker-compose.yml** exposes both ports: `8401:8401` (management) and `8400:8400` (consumer proxy)
-- The `aim-node serve` command accepts `--bind-host` flag (default `0.0.0.0` for serve, `127.0.0.1` for consumer/provider commands)
+- **Implementation:** `ProcessManager.start_consumer()` reads bind host with precedence: `--bind-host` CLI flag > `AIM_NODE_BIND_HOST` env var > default. Default is `0.0.0.0` for `aim-node serve`, `127.0.0.1` for `aim-node consumer`/`aim-node provider`.
+- **docker-compose.yml** sets `AIM_NODE_BIND_HOST=0.0.0.0` and exposes both ports: `8401:8401` (management) and `8400:8400` (consumer proxy)
+- The CLI flag is the final override; env var is the Docker-friendly default; hardcoded default is the fallback.
 
 ---
 
@@ -173,7 +169,7 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
 **Files:** `aim_node/management/__init__.py`, `aim_node/management/state.py`, `aim_node/management/process.py`
 
 - `ProcessStateStore` — thread-safe singleton tracking:
-  - Setup completion state (step, complete flag)
+  - Setup + lock state (setup_complete, locked, unlocked, current_step)
   - Provider process status (running, pid, started_at)
   - Consumer process status (running, pid, proxy_port)
   - Active sessions list with metering snapshots
@@ -185,7 +181,7 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
   - `stop_consumer()` → graceful shutdown
 - Config persistence: read/write `/data/config.toml` via existing `config_loader.py`
 
-**Tests:** 8 unit tests (state transitions, start/stop idempotency, config roundtrip)
+**Tests:** 10 unit tests (state transitions incl. locked→unlocked, start/stop idempotency, 423 on locked start, config roundtrip)
 
 ### Slice 2: Management API Contract (~6h)
 **Files:** `aim_node/management/app.py`, `aim_node/management/routes.py`, `aim_node/management/schemas.py`
@@ -197,7 +193,7 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
 - Static file serving scaffold (serves placeholder until SPA built)
 - `aim-node serve` CLI command: starts ManagementApp on :8401, optionally starts provider/consumer based on config
 
-**Tests:** 14 tests (every endpoint: happy path + primary error case)
+**Tests:** 16 tests (every endpoint: happy path + primary error case, including unlock success/fail and 423 on locked provider/consumer start)
 
 ### Slice 3: Web UI — SPA (~8h)
 **Files:** `frontend/` (new React/Vite/TypeScript/Tailwind project)
@@ -208,7 +204,7 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
 - Consumer page (start/stop, proxy port)
 - Sessions page (list + detail)
 - Settings page (config editor)
-- SPA router: redirects to `/setup` when `setup_complete == false`
+- SPA router: redirects to `/setup` when `setup_complete == false`, to `/unlock` when `locked == true`, otherwise dashboard
 
 **Tests:** Manual QA (e2e tests deferred to integration slice)
 
@@ -261,6 +257,9 @@ The existing `LocalProxy` binds to `127.0.0.1:8400` (loopback only). In Docker, 
 11. Container runs as non-root user (UID 1001)
 12. `/data` volume persists keypair and config across container restarts
 13. GitHub Actions publishes multi-arch image to GHCR on tag push
+14. Encrypted keypair restart shows unlock page, not dashboard
+15. Provider/consumer start returns 423 when node is locked
+16. Successful unlock autostarts configured mode(s)
 
 ## MP R1 Mandate Resolution
 
