@@ -3,7 +3,7 @@
 **Gate:** 2
 **Slice:** 1 of 5
 **Depends on:** Gate 1 R6 (APPROVED, commit 5709b0f)
-**Revision:** R3 (R2 + 2 MP R2 findings fixed)
+**Revision:** R4 (R3 + restore start_provider declaration)
 
 ---
 
@@ -357,16 +357,7 @@ class ProcessManager:
         Unconditionally overwrites to prevent stale secrets from prior runs."""
         os.environ["AIM_KEYSTORE_PASSPHRASE"] = self._state.get_passphrase() or ""
 
-
-
-
-
-
-
-
-
-
-
+    async def start_provider(self) -> None:
         self._check_ready()
         if self._state.provider.running:
             raise AlreadyRunningError("Provider already running")
