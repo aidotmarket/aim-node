@@ -74,8 +74,9 @@ class ProcessManager:
 
     async def start_provider(self) -> None:
         self._check_ready()
-        if self._state.provider.running:
-            raise AlreadyRunningError("Provider already running")
+        with self._state._state_lock:
+            if self._state.provider.running:
+                raise AlreadyRunningError("Provider already running")
 
         self._propagate_passphrase()
 
@@ -95,8 +96,9 @@ class ProcessManager:
             try:
                 self._trust_task = asyncio.create_task(self._trust_channel.run())
                 await handler.start()
-                self._state.provider.running = True
-                self._state.provider.started_at = time.time()
+                with self._state._state_lock:
+                    self._state.provider.running = True
+                    self._state.provider.started_at = time.time()
                 # Block until cancelled
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
@@ -105,16 +107,18 @@ class ProcessManager:
                 await handler.stop()
                 if self._trust_task:
                     self._trust_task.cancel()
-                self._state.provider.running = False
-                self._state.provider.started_at = None
+                with self._state._state_lock:
+                    self._state.provider.running = False
+                    self._state.provider.started_at = None
 
         self._provider_task = asyncio.create_task(_run())
         # Wait briefly for startup
         await asyncio.sleep(0.1)
 
     async def stop_provider(self) -> None:
-        if not self._state.provider.running:
-            raise NotRunningError("Provider not running")
+        with self._state._state_lock:
+            if not self._state.provider.running:
+                raise NotRunningError("Provider not running")
         if self._provider_task:
             self._provider_task.cancel()
             await self._provider_task
@@ -129,8 +133,9 @@ class ProcessManager:
                 Passed as constructor parameter to LocalProxy (no monkeypatching).
         """
         self._check_ready()
-        if self._state.consumer.running:
-            raise AlreadyRunningError("Consumer already running")
+        with self._state._state_lock:
+            if self._state.consumer.running:
+                raise AlreadyRunningError("Consumer already running")
 
         self._propagate_passphrase()
 
@@ -147,18 +152,21 @@ class ProcessManager:
         await self._consumer_proxy.start()
         port = self._consumer_proxy._port
 
-        self._state.consumer.running = True
-        self._state.consumer.started_at = time.time()
+        with self._state._state_lock:
+            self._state.consumer.running = True
+            self._state.consumer.started_at = time.time()
         return port
 
     async def stop_consumer(self) -> None:
-        if not self._state.consumer.running:
-            raise NotRunningError("Consumer not running")
+        with self._state._state_lock:
+            if not self._state.consumer.running:
+                raise NotRunningError("Consumer not running")
         if self._consumer_proxy:
             await self._consumer_proxy.stop()
             self._consumer_proxy = None
-        self._state.consumer.running = False
-        self._state.consumer.started_at = None
+        with self._state._state_lock:
+            self._state.consumer.running = False
+            self._state.consumer.started_at = None
 
     async def autostart(self, bind_host: str = "127.0.0.1") -> None:
         """Auto-start based on config mode. Called after setup/unlock."""
