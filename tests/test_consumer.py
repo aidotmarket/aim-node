@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
 import httpx
@@ -207,7 +208,7 @@ async def test_session_connect_relay_mode(core_config, monkeypatch: pytest.Monke
                 "connection_mode": "relay",
                 "relay_url": "relay.example",
                 "provider_node_id": "seller-1",
-                "provider_ed25519_pubkey": seller_pub.public_bytes_raw().hex(),
+                "provider_ed25519_pubkey": base64.b64encode(seller_pub.public_bytes_raw()).decode("ascii"),
                 "expires_at": "2026-04-07T12:00:00Z",
             }
         ),
@@ -220,10 +221,6 @@ async def test_session_connect_relay_mode(core_config, monkeypatch: pytest.Monke
         connect_calls.append(kwargs)
 
     monkeypatch.setattr("aim_node.consumer.session_manager.RelayTransport.connect", fake_connect)
-    monkeypatch.setattr(
-        "aim_node.consumer.session_manager.base64.b64decode",
-        lambda value, validate=True: bytes.fromhex(value.decode("ascii") if isinstance(value, bytes) else value),
-    )
     manager = SessionManager(core_config, market_client)  # type: ignore[arg-type]
 
     session = await manager.connect("listing-2", 700)
@@ -304,14 +301,15 @@ async def test_session_keepalive_runs_every_4_min(core_config, monkeypatch: pyte
 
     async def fake_sleep(seconds: float) -> None:
         sleep_calls.append(seconds)
-        manager._sessions.pop("session-1", None)
+        if len(sleep_calls) > 1:
+            manager._sessions.pop("session-1", None)
 
     monkeypatch.setattr("aim_node.consumer.session_manager.asyncio.sleep", fake_sleep)
 
     await manager._keepalive_loop("session-1")
 
-    assert sleep_calls == [KEEPALIVE_INTERVAL_S]
-    assert keepalive_calls == []
+    assert sleep_calls == [KEEPALIVE_INTERVAL_S, KEEPALIVE_INTERVAL_S]
+    assert keepalive_calls == ["session-1"]
 
 
 @pytest.mark.asyncio

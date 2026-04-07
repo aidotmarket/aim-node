@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -232,9 +232,15 @@ class SessionManager:
 
     @staticmethod
     def _session_to_dict(state: SessionState) -> dict[str, Any]:
-        payload = asdict(state)
-        payload["transport"] = state.transport
-        return payload
+        return {
+            "session_id": state.session_id,
+            "connection_mode": state.connection_mode,
+            "endpoint_url": state.endpoint_url,
+            "session_token": state.session_token,
+            "expires_at": state.expires_at,
+            "created_at": state.created_at,
+            "request_count": state.request_count,
+        }
 
     @staticmethod
     def _require_str(payload: dict[str, Any], key: str) -> str:

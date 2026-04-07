@@ -44,15 +44,17 @@ class LocalProxy:
             loop="asyncio",
         )
         self._server = uvicorn.Server(server_config)
-        self._server_task = self._server.serve()
+        import asyncio
+
+        self._server_task = asyncio.create_task(self._server.serve())
 
     async def stop(self) -> None:
         """Shutdown server."""
         if self._server is None:
             return
         self._server.should_exit = True
-        if self._server.started and self._server_task is not None:
-            await self._server.shutdown()
+        if self._server_task is not None:
+            await self._server_task
         self._server = None
         self._server_task = None
 
