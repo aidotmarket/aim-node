@@ -216,6 +216,24 @@ class ProcessStateStore:
         with self._state_lock:
             self._sessions = [s for s in self._sessions if s.session_id != session_id]
 
+    def get_session(self, session_id: str) -> Optional[dict]:
+        """Return single session detail by ID, or None if not found."""
+        with self._state_lock:
+            for s in self._sessions:
+                if s.session_id == session_id:
+                    return {
+                        "id": s.session_id,
+                        "role": s.role,
+                        "state": s.state,
+                        "created_at": s.created_at,
+                        "peer_fingerprint": s.peer_fingerprint,
+                        "bytes_transferred": s.bytes_transferred,
+                        "metering_events": [],
+                        "latency_ms": None,
+                        "error_count": 0,
+                    }
+            return None
+
     def get_sessions(self) -> list[dict]:
         with self._state_lock:
             return [

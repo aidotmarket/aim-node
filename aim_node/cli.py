@@ -182,6 +182,20 @@ def init(passphrase: str) -> None:
 
 
 @main.command()
+@click.option("--data-dir", type=click.Path(), default="/data")
+@click.option("--host", default="0.0.0.0")
+@click.option("--port", type=int, default=8401)
+def serve(data_dir: str, host: str, port: int) -> None:
+    """Start the AIM Node management HTTP server."""
+    import uvicorn
+
+    from aim_node.management.app import create_management_app
+
+    app = create_management_app(Path(data_dir))
+    uvicorn.run(app, host=host, port=port)
+
+
+@main.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """Show node status: identity, active sessions, health."""

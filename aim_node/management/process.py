@@ -168,6 +168,18 @@ class ProcessManager:
             self._state.consumer.running = False
             self._state.consumer.started_at = None
 
+    async def shutdown(self) -> None:
+        """Graceful shutdown: stop provider and consumer if running.
+        Suppresses NotRunningError."""
+        try:
+            await self.stop_provider()
+        except NotRunningError:
+            pass
+        try:
+            await self.stop_consumer()
+        except NotRunningError:
+            pass
+
     async def autostart(self, bind_host: str = "127.0.0.1") -> None:
         """Auto-start based on config mode. Called after setup/unlock."""
         mode = self._state._mode
