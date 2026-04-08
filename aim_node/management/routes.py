@@ -242,23 +242,6 @@ async def config_update(request: Request) -> JSONResponse:
     prev_mode = config["management"].get("mode")
     restart_required = False
 
-    # Route-level upstream check: merge request with persisted config and
-    # require upstream_url when effective mode includes provider.
-    effective_mode = body.mode if body.mode is not None else prev_mode
-    persisted_upstream = (
-        config.get("provider", {}).get("adapter", {}).get("endpoint_url")
-        if isinstance(config.get("provider"), dict)
-        else None
-    )
-    effective_upstream = (
-        body.upstream_url if body.upstream_url is not None else persisted_upstream
-    )
-    if effective_mode in ("provider", "both") and not effective_upstream:
-        return JSONResponse(
-            {"error": "upstream_url required when mode includes provider"},
-            status_code=422,
-        )
-
     if body.mode is not None:
         config["management"]["mode"] = body.mode
         if body.mode != prev_mode:
@@ -273,6 +256,14 @@ async def config_update(request: Request) -> JSONResponse:
         if "adapter" not in config["provider"]:
             config["provider"]["adapter"] = {}
         config["provider"]["adapter"]["endpoint_url"] = body.upstream_url
+
+    effective_mode = config.get("management", {}).get("mode", "")
+    effective_upstream = config.get("provider", {}).get("adapter", {}).get("endpoint_url")
+    if effective_mode in ("provider", "both") and not effective_upstream:
+        return JSONResponse(
+            {"error": "upstream_url required when mode includes provider"},
+            status_code=422,
+        )
 
     write_config(data_dir, config)
     # Reflect mode change in state store for dashboard purposes

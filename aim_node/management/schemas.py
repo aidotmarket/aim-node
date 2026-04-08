@@ -77,10 +77,6 @@ class ConfigUpdateRequest(BaseModel):
     def _validate_upstream_url(cls, v: Optional[str]) -> Optional[str]:
         return _validate_http_url(v)
 
-    # Upstream-required check is enforced at route level (config_update),
-    # which merges the request with persisted config so partial updates work.
-
-
 # ---------- Response Models ----------
 
 

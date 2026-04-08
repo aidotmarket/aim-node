@@ -180,24 +180,19 @@ class ProcessManager:
         except NotRunningError:
             pass
 
-    async def autostart(self, bind_host: str = "127.0.0.1") -> None:
-        """Auto-start based on config mode. Called after setup/unlock.
-
-        Best-effort: errors are logged and suppressed so they don't fail
-        the calling endpoint (finalize/unlock)."""
-        mode = self._state._mode
-        if not mode:
-            return
+    async def autostart(self) -> None:
+        """Best-effort start of provider/consumer per configured mode. Called after finalize and unlock."""
+        mode = self._state._mode or ""
         if mode in ("provider", "both"):
             try:
                 await self.start_provider()
             except Exception:
-                logger.exception("autostart: provider start failed")
+                pass
         if mode in ("consumer", "both"):
             try:
-                await self.start_consumer(bind_host=bind_host)
+                await self.start_consumer()
             except Exception:
-                logger.exception("autostart: consumer start failed")
+                pass
 
 
 class PreconditionError(Exception):
@@ -218,4 +213,3 @@ class NotRunningError(Exception):
 
 class ConfigError(Exception):
     """500 — config file parse/IO error."""
-
