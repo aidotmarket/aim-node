@@ -79,8 +79,8 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: \${{ github.actor }}
-          password: \${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Wait for GHCR propagation
         run: sleep 20
