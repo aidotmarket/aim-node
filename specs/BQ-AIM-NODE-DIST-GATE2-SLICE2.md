@@ -2,7 +2,7 @@
 
 **BQ Code:** BQ-AIM-NODE-DIST
 **Slice:** 2 of 5
-**Revision:** R4 (R3 + 5 MP mandates: keystore path, fingerprint helper, autostart, error mapping, test gaps)
+**Revision:** R4.1 (R4 + fix 2 spec-text inconsistencies: ConfigUpdateRequest validator location, ValueError error mapping)
 **Depends on:** Slice 1 (ProcessStateStore, ProcessManager, config_writer, NodeState)
 
 ---
@@ -14,7 +14,7 @@
 | 1 | Missing methods: `get_session()`, `initialize()`, `shutdown()` | `get_session(id)` added to ProcessStateStore. Lifespan uses constructor (no separate initialize). `shutdown()` added to ProcessManager. All three additions are part of this slice's build. |
 | 2 | Key storage mismatch: spec says PEM, Slice 1 uses keystore.json via DeviceCrypto | Corrected. `keypair.py` removed. Keypair generation uses `DeviceCrypto.get_or_create_keypairs()` with keystore.json. All lock/unlock/setup endpoints use same keystore format. |
 | 3 | Dashboard missing `node_id` and `market_connected` | `node_id` from config.toml `core.node_serial` (set by finalize_setup via config_writer). `market_connected` via httpx ping to `core.market_api_url`. Both computed at route level. |
-| 4 | ConfigUpdateRequest.mode unconstrained | Changed to `Literal["provider", "consumer", "both"]`. `upstream_url` required when effective mode includes provider — enforced via `model_validator`. |
+| 4 | ConfigUpdateRequest.mode unconstrained | Changed to `Literal["provider", "consumer", "both"]`. `upstream_url` required when effective mode includes provider — enforced at route level after merging with persisted config (R4). |
 | 5 | Test plan insufficient (16 for 16 endpoints) | Expanded to 32 tests: every endpoint gets happy path + primary error case. Missing endpoints added. |
 
 
@@ -25,7 +25,7 @@
 | 1 | Keystore path: finalize_setup must persist `core.keystore_path` or `core.data_dir` so runtime uses same keystore as setup/unlock | **No config key needed.** `data_dir` is passed at app creation (`create_management_app(data_dir)`) and flows to all handlers via `state._data_dir`. All keystore access derives path as `data_dir / "keystore.json"`. This is consistent across `setup_keypair`, `keypair_info`, `unlock`, and `_crypto_for()`. `finalize_setup` writes `core.node_serial` and `core.market_api_url` but keystore path is architectural, not config-driven. |
 | 2 | Fingerprint API: DeviceCrypto has no `fingerprint()` method | **Route-level helper defined.** `_fingerprint_from_ed_pub(ed_pub)` in `routes.py` computes SHA-256 of raw Ed25519 public key bytes via `cryptography` serialization. Pattern matches `cli.py`. Used by `setup_keypair` and `keypair_info`. Spec updated to remove references to `crypto.fingerprint()`. |
 | 3 | Autostart after finalize/unlock: Gate 1 requires it. `ConfigUpdateRequest` validator needs route-level merge | **Two changes:** (a) `setup_finalize` calls `process_mgr.autostart()` after `state.mark_setup_complete()` — starts provider/consumer per configured mode, suppresses errors if dependencies not ready. `unlock` calls `process_mgr.autostart()` after successful unlock. (b) `ConfigUpdateRequest` model_validator removed. Upstream-url-required check moved to `config_update` route handler, which merges request fields with persisted config before validating that effective mode requiring provider has `upstream_url` set (either from request or existing config). |
-| 4 | Error mapping: scope 422 to Pydantic `ValidationError` only; separate HTTP code for `config_loader` ValueError | **Custom exception introduced.** `ConfigError(Exception)` defined in `process.py` (alongside other custom exceptions). `config_writer.read_config` and `write_config` raise `ConfigError` instead of bare `ValueError` for parse/IO failures. Exception handler maps: `ValidationError` → 422, `ConfigError` → 500, `ValueError` (from model_validators in request parsing) → 422. Net effect: Pydantic validation and explicit model_validator raises stay 422; infrastructure config failures get 500. |
+| 4 | Error mapping: scope 422 to Pydantic `ValidationError` only; separate HTTP code for `config_loader` ValueError | **Custom exception introduced.** `ConfigError(Exception)` defined in `process.py` (alongside other custom exceptions). `config_writer.read_config` and `write_config` raise `ConfigError` instead of bare `ValueError` for parse/IO failures. Exception handler maps: `ValidationError` → 422, `ConfigError` → 500. Bare `ValueError` (rare catch-all) → 400. Net effect: only Pydantic validation errors produce 422; infrastructure config failures get 500. |
 | 5 | Test gaps: add sessions/{id} happy path, error cases for read-only GETs, consumer/start 412 test | **3 tests added (37 total):** `test_session_detail_happy_path` (injects session into state, GETs by ID, asserts 200 + schema), `test_consumer_start_when_setup_incomplete_412` (fresh app, asserts 412), `test_config_read_after_mode_change` (updates config, re-reads, verifies reflected). |
 
 ---
@@ -270,8 +270,8 @@ Error mapping:
 - `AlreadyRunningError` → 409
 - `NotRunningError` → 409
 - `FileExistsError` → 409
-- `ValueError` (model_validator / request parsing) → 422
 - `ConfigError` (config_writer parse/IO) → 500
+- Bare `ValueError` from route logic → 400 (catch-all; should be rare after ConfigError introduction)
 - Wrong passphrase (unlock returns False) → 401
 
 ### Dashboard node_id and market_connected
@@ -325,7 +325,9 @@ async def dashboard(request):
 
 `TestConnectionRequest.api_url`, `FinalizeSetupRequest.api_url`, `ConfigUpdateRequest.api_url`: Pydantic `field_validator` ensures scheme is `http` or `https`. Reject `file://`, `ftp://`, etc.
 
-`FinalizeSetupRequest.upstream_url` and `ConfigUpdateRequest.upstream_url`: Same validation. Required when mode includes provider — enforced via `model_validator`.
+`FinalizeSetupRequest.upstream_url`: Required when mode includes provider — enforced via `model_validator` on the request model.
+
+`ConfigUpdateRequest.upstream_url`: Upstream-required check is NOT on the request model. It is enforced at route level in `config_update`, which merges the request with persisted config before checking that the effective mode has `upstream_url` set.
 
 ---
 
@@ -463,5 +465,5 @@ Note: 37 tests total (exceeds 32 minimum). Tests 33-34 cover keypair info; tests
 12. Dashboard node_id from core.node_serial, market_connected via core.market_api_url ping
 13. ConfigUpdateRequest.mode constrained to Literal enum
 14. Autostart fires after finalize and unlock (best-effort, non-blocking)
-15. ConfigError maps to 500; ValueError (request validation) maps to 422
+15. ConfigError maps to 500; only Pydantic ValidationError produces 422
 16. Partial config updates work when upstream_url already persisted
