@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  aim-node:
+    image: ghcr.io/aidotmarket/aim-node:${AIM_NODE_VERSION:-latest}
+    container_name: aim-node
+    restart: unless-stopped
+    ports:
+      - "${AIM_NODE_PORT:-8080}:8080"
+    volumes:
+      - aim-node-config:/data/config
+      - aim-node-keystore:/data/keystore
+      - aim-node-cache:/data/cache
+    environment:
+      - AIM_API_URL=${AIM_API_URL:-https://api.ai.market}
+      - AIM_NODE_NAME=${AIM_NODE_NAME:-my-node}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/mgmt/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  aim-node-config:
+  aim-node-keystore:
+  aim-node-cache:
