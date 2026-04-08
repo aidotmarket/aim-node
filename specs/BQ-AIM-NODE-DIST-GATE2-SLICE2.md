@@ -2,7 +2,7 @@
 
 **BQ Code:** BQ-AIM-NODE-DIST
 **Slice:** 2 of 5
-**Revision:** R2 (addressing MP R1 mandates: 5 findings)
+**Revision:** R3 (R2 + fix config key paths: core.node_serial, core.market_api_url)
 **Depends on:** Slice 1 (ProcessStateStore, ProcessManager, config_writer, NodeState)
 
 ---
@@ -13,7 +13,7 @@
 |---|---------|-----------|
 | 1 | Missing methods: `get_session()`, `initialize()`, `shutdown()` | `get_session(id)` added to ProcessStateStore. Lifespan uses constructor (no separate initialize). `shutdown()` added to ProcessManager. All three additions are part of this slice's build. |
 | 2 | Key storage mismatch: spec says PEM, Slice 1 uses keystore.json via DeviceCrypto | Corrected. `keypair.py` removed. Keypair generation uses `DeviceCrypto.get_or_create_keypairs()` with keystore.json. All lock/unlock/setup endpoints use same keystore format. |
-| 3 | Dashboard missing `node_id` and `market_connected` | `node_id` derived from config.toml `node_serial` (set by finalize_setup). `market_connected` populated by route handler via httpx ping to api_url. Both fields computed at route level, not stored in ProcessStateStore. |
+| 3 | Dashboard missing `node_id` and `market_connected` | `node_id` from config.toml `core.node_serial` (set by finalize_setup via config_writer). `market_connected` via httpx ping to `core.market_api_url`. Both computed at route level. |
 | 4 | ConfigUpdateRequest.mode unconstrained | Changed to `Literal["provider", "consumer", "both"]`. `upstream_url` required when effective mode includes provider — enforced via `model_validator`. |
 | 5 | Test plan insufficient (16 for 16 endpoints) | Expanded to 32 tests: every endpoint gets happy path + primary error case. Missing endpoints added. |
 
@@ -266,16 +266,16 @@ Error mapping:
 
 ### Dashboard node_id and market_connected
 
-`node_id` is read from config.toml `management.node_serial` (written by `finalize_setup`). `market_connected` is computed at request time: `httpx.AsyncClient.get(api_url + "/api/v1/health", timeout=3)` — true if 200, false otherwise. This avoids storing connectivity state that goes stale.
+`node_id` is read from config.toml `core.node_serial` (written by `finalize_setup` via `config_writer`). `market_connected` is computed at request time via httpx GET to `core.market_api_url` + `/api/v1/health` — true if 200, false otherwise. This avoids storing connectivity state that goes stale.
 
 ```python
 async def dashboard(request):
     state = request.app.state.store
     dash = state.get_dashboard()
     config = read_config(state._data_dir)
-    mgmt = config.get("management", {})
-    node_id = mgmt.get("node_serial", "")
-    api_url = config.get("market", {}).get("api_url", "")
+    core = config.get("core", {})
+    node_id = core.get("node_serial", "")
+    api_url = core.get("market_api_url", "")
     market_connected = False
     if api_url:
         try:
@@ -447,5 +447,5 @@ Note: 34 tests total (exceeds 32 minimum). Tests 33-34 cover the keypair info en
 9. All 34 tests pass
 10. No import dependency on consumer/proxy or provider internals except through ProcessManager
 11. Keypair generation uses DeviceCrypto + keystore.json (same format as lock/unlock)
-12. Dashboard node_id from config, market_connected from live httpx ping
+12. Dashboard node_id from core.node_serial, market_connected via core.market_api_url ping
 13. ConfigUpdateRequest.mode constrained to Literal enum
