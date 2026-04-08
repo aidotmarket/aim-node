@@ -16,25 +16,35 @@ try:
 except ModuleNotFoundError:
     tomli_w = None  # fallback to manual TOML writing
 
+from aim_node.management.process import ConfigError
+
 
 def read_config(data_dir: Path) -> dict:
     config_path = data_dir / "config.toml"
     if not config_path.exists():
         return {}
-    with open(config_path, "rb") as f:
-        return tomli.load(f)
+    try:
+        with open(config_path, "rb") as f:
+            return tomli.load(f)
+    except OSError as exc:
+        raise ConfigError(f"failed to read config: {exc}") from exc
+    except Exception as exc:
+        raise ConfigError(f"failed to parse config: {exc}") from exc
 
 
 def write_config(data_dir: Path, config: dict) -> None:
     config_path = data_dir / "config.toml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    if tomli_w:
-        with open(config_path, "wb") as f:
-            tomli_w.dump(config, f)
-    else:
-        # Manual TOML serialization
-        with open(config_path, "w") as f:
-            _write_toml(f, config, prefix="")
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if tomli_w:
+            with open(config_path, "wb") as f:
+                tomli_w.dump(config, f)
+        else:
+            # Manual TOML serialization
+            with open(config_path, "w") as f:
+                _write_toml(f, config, prefix="")
+    except OSError as exc:
+        raise ConfigError(f"failed to write config: {exc}") from exc
 
 
 def _write_toml(f, d: dict, prefix: str) -> None:

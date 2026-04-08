@@ -14,7 +14,7 @@ from aim_node.core.crypto import DeviceCrypto
 from aim_node.management.app import create_management_app
 from aim_node.management.config_writer import write_config
 from aim_node.management.process import ProcessManager
-from aim_node.management.state import NodeState, ProcessStateStore
+from aim_node.management.state import NodeState, ProcessStateStore, SessionSnapshot
 
 
 # ---------- Fixtures & helpers ----------
@@ -569,3 +569,54 @@ async def test_keypair_info_no_keystore_404(fresh_app):
     async with _make_client(app) as client:
         r = await client.get("/api/mgmt/keypair")
     assert r.status_code == 404
+
+
+# 35
+async def test_session_detail_happy_path(setup_complete_app):
+    app, state, _ = setup_complete_app
+    snapshot = SessionSnapshot(
+        session_id="sess-abc-123",
+        role="consumer",
+        state="active",
+        created_at=1234567890.0,
+        peer_fingerprint="deadbeef",
+        bytes_transferred=42,
+    )
+    state.add_session(snapshot)
+    async with _make_client(app) as client:
+        r = await client.get("/api/mgmt/sessions/sess-abc-123")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == "sess-abc-123"
+    assert body["role"] == "consumer"
+    assert body["state"] == "active"
+    assert body["created_at"] == 1234567890.0
+    assert body["metering_events"] == []
+    assert body["error_count"] == 0
+
+
+# 36
+async def test_consumer_start_when_setup_incomplete_412(fresh_app):
+    app, *_ = fresh_app
+    async with _make_client(app) as client:
+        r = await client.post("/api/mgmt/consumer/start")
+    assert r.status_code == 412
+
+
+# 37
+async def test_config_read_after_mode_change(setup_complete_app):
+    app, *_ = setup_complete_app
+    async with _make_client(app) as client:
+        r1 = await client.put(
+            "/api/mgmt/config",
+            json={
+                "mode": "both",
+                "upstream_url": "http://127.0.0.1:9000/invoke",
+            },
+        )
+        assert r1.status_code == 200
+        r2 = await client.get("/api/mgmt/config")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["mode"] == "both"
+    assert body["upstream_url"] == "http://127.0.0.1:9000/invoke"

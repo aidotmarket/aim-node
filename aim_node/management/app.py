@@ -16,6 +16,7 @@ from starlette.staticfiles import StaticFiles
 
 from aim_node.management.process import (
     AlreadyRunningError,
+    ConfigError,
     LockedError,
     NotRunningError,
     PreconditionError,
@@ -98,8 +99,14 @@ async def _validation_error_handler(request: Request, exc: ValidationError) -> J
     return JSONResponse({"error": errors}, status_code=422)
 
 
+async def _config_error_handler(request: Request, exc: ConfigError) -> JSONResponse:
+    return JSONResponse({"error": str(exc) or "Config error"}, status_code=500)
+
+
 async def _value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
-    return JSONResponse({"error": str(exc)}, status_code=422)
+    # Catch-all for stray ValueError from route logic. Should be rare after
+    # ConfigError introduction; pydantic ValidationError is handled separately (422).
+    return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
@@ -143,6 +150,7 @@ def create_management_app(data_dir: Path) -> Starlette:
         AlreadyRunningError: _already_running_handler,
         NotRunningError: _not_running_handler,
         FileExistsError: _file_exists_handler,
+        ConfigError: _config_error_handler,
         ValidationError: _validation_error_handler,
         ValueError: _value_error_handler,
         HTTPException: _http_exception_handler,

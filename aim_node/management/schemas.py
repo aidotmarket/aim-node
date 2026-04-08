@@ -77,11 +77,8 @@ class ConfigUpdateRequest(BaseModel):
     def _validate_upstream_url(cls, v: Optional[str]) -> Optional[str]:
         return _validate_http_url(v)
 
-    @model_validator(mode="after")
-    def _require_upstream_for_provider(self):
-        if self.mode in ("provider", "both") and self.upstream_url is None:
-            raise ValueError("upstream_url required when mode includes provider")
-        return self
+    # Upstream-required check is enforced at route level (config_update),
+    # which merges the request with persisted config so partial updates work.
 
 
 # ---------- Response Models ----------

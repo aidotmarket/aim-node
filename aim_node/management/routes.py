@@ -162,6 +162,14 @@ async def setup_finalize(request: Request) -> JSONResponse:
     )
     state.mark_setup_complete(body.mode)
     state.determine_node_state()
+
+    # Best-effort autostart based on configured mode
+    process_mgr = request.app.state.process_mgr
+    try:
+        await process_mgr.autostart()
+    except Exception:
+        logger.exception("setup_finalize: autostart failed")
+
     return JSONResponse(FinalizeResponse(ok=True).model_dump())
 
 
@@ -233,6 +241,23 @@ async def config_update(request: Request) -> JSONResponse:
 
     prev_mode = config["management"].get("mode")
     restart_required = False
+
+    # Route-level upstream check: merge request with persisted config and
+    # require upstream_url when effective mode includes provider.
+    effective_mode = body.mode if body.mode is not None else prev_mode
+    persisted_upstream = (
+        config.get("provider", {}).get("adapter", {}).get("endpoint_url")
+        if isinstance(config.get("provider"), dict)
+        else None
+    )
+    effective_upstream = (
+        body.upstream_url if body.upstream_url is not None else persisted_upstream
+    )
+    if effective_mode in ("provider", "both") and not effective_upstream:
+        return JSONResponse(
+            {"error": "upstream_url required when mode includes provider"},
+            status_code=422,
+        )
 
     if body.mode is not None:
         config["management"]["mode"] = body.mode
@@ -359,6 +384,14 @@ async def unlock(request: Request) -> JSONResponse:
     ok = state.unlock(body.passphrase)
     if not ok:
         return JSONResponse({"error": "Invalid passphrase"}, status_code=401)
+
+    # Best-effort autostart after unlock
+    process_mgr = request.app.state.process_mgr
+    try:
+        await process_mgr.autostart()
+    except Exception:
+        logger.exception("unlock: autostart failed")
+
     return JSONResponse(UnlockResponse(unlocked=True).model_dump())
 
 
