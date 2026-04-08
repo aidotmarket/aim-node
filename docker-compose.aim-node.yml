@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   aim-node:
-    image: ghcr.io/aidotmarket/aim-node:${AIM_NODE_VERSION:-v0.0.1-rc.1}
+    image: ghcr.io/aidotmarket/aim-node:${AIM_NODE_VERSION:-v0.0.1}
     container_name: aim-node
     restart: unless-stopped
     ports:
