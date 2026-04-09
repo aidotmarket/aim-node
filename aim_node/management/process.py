@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 
 from aim_node.config_loader import load_adapter_config, load_config
-from aim_node.core.config import AIMCoreConfig
 from aim_node.core.crypto import DeviceCrypto
 from aim_node.core.trust_channel import TrustChannelClient
 from aim_node.provider.adapter import HttpJsonAdapter
@@ -19,7 +18,7 @@ from aim_node.consumer.proxy import LocalProxy
 from aim_node.consumer.session_manager import SessionManager
 from aim_node.core.market_client import MarketClient
 
-from .state import ProcessStateStore, NodeState
+from .state import ProcessStateStore
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from typing import Type, TypeVar
 
 import httpx
 from cryptography.hazmat.primitives import serialization
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 

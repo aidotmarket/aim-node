@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 from types import SimpleNamespace
 
@@ -15,7 +14,6 @@ from aim_node.consumer.session_manager import (
     SessionState,
 )
 from aim_node.core.crypto import DeviceCrypto
-from aim_node.relay.protocol import ResponsePayload
 
 
 class StubSessionManager:

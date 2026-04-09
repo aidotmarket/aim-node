@@ -5,7 +5,6 @@ import base64
 import logging
 import os
 from contextlib import suppress
-from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 

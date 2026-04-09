@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 
 from starlette.applications import Starlette
 from starlette.requests import Request
