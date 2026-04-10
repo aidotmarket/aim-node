@@ -32,20 +32,17 @@ jobs:
             pip install --upgrade "pytest-asyncio>=0.23"
           fi
         env:
-          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
 
       - name: Verify test secrets
         run: |
           missing=""
           [ -z "$AIM_TEST_AUTH_TOKEN" ] && missing="$missing AIM_TEST_AUTH_TOKEN"
-          [ -z "$AIM_TEST_API_KEY" ] && missing="$missing AIM_TEST_API_KEY"
           if [ -n "$missing" ]; then
             echo "::error::Missing secrets:$missing"
             exit 1
           fi
         env:
-          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
 
       - name: Verify required secrets
@@ -59,7 +56,6 @@ jobs:
 
       - name: Run smoke tests
         env:
-          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_EMAIL: ${{ secrets.AIM_TEST_EMAIL }}
           AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
         run: |

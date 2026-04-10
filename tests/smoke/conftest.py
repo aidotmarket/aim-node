@@ -86,24 +86,23 @@ async def smoke_auth_client(
     client = httpx.AsyncClient(
         base_url=BASE_URL, headers=headers, timeout=timeout, follow_redirects=True
     )
-    yield client
     try:
-        await client.aclose()
-    except RuntimeError:
-        pass
+        yield client
+    finally:
+        try:
+            await client.aclose()
+        except RuntimeError:
+            pass
 
 
 @pytest_asyncio.fixture(scope="session")
 async def smoke_client(smoke_auth_token: str | None) -> AsyncIterator[httpx.AsyncClient]:
     if not smoke_auth_token:
         pytest.exit("AIM_TEST_AUTH_TOKEN not set", returncode=1)
-    api_key = os.environ.get("AIM_TEST_API_KEY", "")
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {smoke_auth_token}",
     }
-    if api_key:
-        headers["X-Internal-API-Key"] = api_key
     timeout = httpx.Timeout(30.0, connect=10.0)
     client = httpx.AsyncClient(
         base_url=BASE_URL,
@@ -111,11 +110,13 @@ async def smoke_client(smoke_auth_token: str | None) -> AsyncIterator[httpx.Asyn
         timeout=timeout,
         follow_redirects=True,
     )
-    yield client
     try:
-        await client.aclose()
-    except RuntimeError:
-        pass
+        yield client
+    finally:
+        try:
+            await client.aclose()
+        except RuntimeError:
+            pass
 
 
 @pytest_asyncio.fixture(scope="session")
