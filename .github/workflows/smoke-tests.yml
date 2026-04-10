@@ -19,15 +19,33 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[test]"
+          pip install --upgrade -e ".[test]"
 
-      - name: Verify test secret
+      - name: Verify pytest-asyncio version
         run: |
-          if [ -z "$AIM_TEST_AUTH_TOKEN" ]; then
-            echo "::error::AIM_TEST_AUTH_TOKEN secret is not set"
+          version=$(python -m pip show pytest-asyncio | grep Version | cut -d' ' -f2)
+          echo "pytest-asyncio version: $version"
+          major=$(echo $version | cut -d. -f1)
+          minor=$(echo $version | cut -d. -f2)
+          if [ "$major" -eq 0 ] && [ "$minor" -lt 23 ]; then
+            echo "::error::pytest-asyncio < 0.23, upgrading..."
+            pip install --upgrade "pytest-asyncio>=0.23"
+          fi
+        env:
+          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
+          AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
+
+      - name: Verify test secrets
+        run: |
+          missing=""
+          [ -z "$AIM_TEST_AUTH_TOKEN" ] && missing="$missing AIM_TEST_AUTH_TOKEN"
+          [ -z "$AIM_TEST_API_KEY" ] && missing="$missing AIM_TEST_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets:$missing"
             exit 1
           fi
         env:
+          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
 
       - name: Verify required secrets
@@ -41,6 +59,7 @@ jobs:
 
       - name: Run smoke tests
         env:
+          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_EMAIL: ${{ secrets.AIM_TEST_EMAIL }}
           AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
         run: |

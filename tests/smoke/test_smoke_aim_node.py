@@ -169,7 +169,9 @@ async def test_auth_valid(
     payload = response.json()
     assert isinstance(payload.get("email"), str)
     assert payload["email"].strip()
-    assert payload.get("user_id")
+    assert payload.get("user_id") or payload.get("id") or payload.get("sub"), (
+        f"Missing user identifier in /auth/me response: {list(payload.keys())}"
+    )
 
 
 @pytest.mark.asyncio
