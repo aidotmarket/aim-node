@@ -83,10 +83,10 @@ async def smoke_auth_client(
         "Authorization": f"Bearer {smoke_auth_token}",
     }
     timeout = httpx.Timeout(30.0, connect=10.0)
-    transport = httpx.AsyncHTTPTransport(retries=1, keepalive_expiry=0)
     client = httpx.AsyncClient(
         base_url=BASE_URL, headers=headers, timeout=timeout,
-        follow_redirects=True, transport=transport,
+        follow_redirects=True,
+        limits=httpx.Limits(max_keepalive_connections=0),
     )
     try:
         yield client
@@ -106,13 +106,12 @@ async def smoke_client(smoke_auth_token: str | None) -> AsyncIterator[httpx.Asyn
         "Authorization": f"Bearer {smoke_auth_token}",
     }
     timeout = httpx.Timeout(30.0, connect=10.0)
-    transport = httpx.AsyncHTTPTransport(retries=1, keepalive_expiry=0)
     client = httpx.AsyncClient(
         base_url=BASE_URL,
         headers=headers,
         timeout=timeout,
         follow_redirects=True,
-        transport=transport,
+        limits=httpx.Limits(max_keepalive_connections=0),
     )
     try:
         yield client
