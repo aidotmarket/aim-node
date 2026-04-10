@@ -21,18 +21,22 @@ jobs:
         run: |
           pip install -e ".[test]"
 
-      - name: Verify required secrets
+      - name: Verify test secret
         run: |
           if [ -z "$AIM_TEST_API_KEY" ]; then
-            echo "::error::AIM_TEST_API_KEY secret is not configured. Smoke tests cannot run."
+            echo "::error::AIM_TEST_API_KEY secret is not set"
             exit 1
           fi
+        env:
+          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
+
+      - name: Verify required secrets
+        run: |
           if [ -z "$AIM_TEST_EMAIL" ]; then
             echo "::error::AIM_TEST_EMAIL secret is not configured. Smoke tests cannot run."
             exit 1
           fi
         env:
-          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_EMAIL: ${{ secrets.AIM_TEST_EMAIL }}
 
       - name: Run smoke tests

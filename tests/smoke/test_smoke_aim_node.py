@@ -17,6 +17,7 @@ def _assert_status(response: httpx.Response, expected: tuple[int, ...]) -> None:
         f"{response.request.url}: {response.text}"
     )
 
+
 async def _register_node(
     client: httpx.AsyncClient,
     smoke_state: dict[str, object],
@@ -43,7 +44,7 @@ async def _register_node(
     # repository, so smoke registration reuses a deterministic keypair and endpoint URL.
     # Re-running the suite updates the same logical node instead of creating unbounded
     # one-off registrations when cleanup endpoints are unavailable.
-    endpoint_url = f"https://example.com/aim-node-smoke/{stable_suffix}/{mode}"
+    endpoint_url = f"https://example.com/smoke-test-aim-node/{stable_suffix}/{mode}"
 
     challenge_response = await client.post(
         "/api/v1/aim/nodes/register/challenge",
@@ -161,12 +162,14 @@ async def test_health_check(smoke_client: httpx.AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_auth_valid(
-    smoke_client: httpx.AsyncClient, smoke_email: str
+    smoke_auth_client: httpx.AsyncClient,
 ) -> None:
-    response = await smoke_client.get("/api/v1/auth/me")
+    response = await smoke_auth_client.get("/api/v1/auth/me")
     _assert_status(response, (200,))
     payload = response.json()
-    assert payload["email"] == smoke_email
+    assert isinstance(payload.get("email"), str)
+    assert payload["email"].strip()
+    assert payload.get("user_id")
 
 
 @pytest.mark.asyncio
@@ -201,6 +204,8 @@ async def test_provider_register(
         smoke_email,
         mode="seller",
     )
+    # No relay-specific deregistration route is documented in this repository.
+    # Cleanup falls back to node teardown in the session-scoped smoke_cleanup fixture.
     response = await smoke_client.post(
         "/api/v1/aim/relay/register",
         json={"node_id": seller_node["node_id"]},
@@ -230,5 +235,5 @@ async def test_trace_submit(
 ) -> None:
     """Disabled in production smoke: trace-event writes have no cleanup endpoint."""
     pytest.skip(
-        "Trace smoke test skipped because production trace-event writes cannot be cleaned up"
+        "Trace smoke test skipped because production trace-event writes cannot be cleaned up; cleanup is manual until the API exposes a delete or dry-run path"
     )

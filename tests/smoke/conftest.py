@@ -30,6 +30,13 @@ def smoke_api_key() -> str:
     return smoke_api_key
 
 
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    import asyncio
+
+    return asyncio.DefaultEventLoopPolicy()
+
+
 async def _cleanup_node_registration(
     client: httpx.AsyncClient, node_id: str
 ) -> None:
@@ -76,11 +83,26 @@ def smoke_state() -> dict[str, object]:
 
 
 @pytest_asyncio.fixture(scope="session")
-async def smoke_client(smoke_api_key: str) -> AsyncIterator[httpx.AsyncClient]:
+async def smoke_auth_client(smoke_api_key: str) -> AsyncIterator[httpx.AsyncClient]:
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {smoke_api_key}",
-        # The live AIM API advertises X-Internal-API-Key for several node endpoints.
+    }
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    async with httpx.AsyncClient(
+        base_url=BASE_URL,
+        headers=headers,
+        timeout=timeout,
+        follow_redirects=True,
+    ) as client:
+        yield client
+
+
+@pytest_asyncio.fixture(scope="session")
+async def smoke_client(smoke_api_key: str) -> AsyncIterator[httpx.AsyncClient]:
+    headers = {
+        "Accept": "application/json",
+        # Internal smoke endpoints expect the API key in X-Internal-API-Key, not Bearer auth.
         "X-Internal-API-Key": smoke_api_key,
     }
     timeout = httpx.Timeout(30.0, connect=10.0)
