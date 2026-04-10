@@ -23,14 +23,6 @@ async def _close_session(client: httpx.AsyncClient, session_id: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def smoke_api_key() -> str:
-    smoke_api_key = os.environ.get("AIM_TEST_API_KEY")
-    if not smoke_api_key:
-        pytest.exit("AIM_TEST_API_KEY not set — aborting smoke suite", returncode=1)
-    return smoke_api_key
-
-
-@pytest.fixture(scope="session")
 def smoke_auth_token() -> str | None:
     return os.environ.get("AIM_TEST_AUTH_TOKEN")
 
@@ -64,8 +56,10 @@ def smoke_email() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def require_smoke_env(smoke_api_key: str, smoke_email: str) -> None:
-    del smoke_api_key, smoke_email
+def require_smoke_env(smoke_auth_token: str | None, smoke_email: str) -> None:
+    if not smoke_auth_token:
+        pytest.exit("AIM_TEST_AUTH_TOKEN not set — aborting smoke suite", returncode=1)
+    del smoke_auth_token, smoke_email
 
 
 @pytest.fixture(scope="session")
@@ -83,7 +77,7 @@ async def smoke_auth_client(
     smoke_auth_token: str | None,
 ) -> AsyncIterator[httpx.AsyncClient]:
     if not smoke_auth_token:
-        pytest.skip("AIM_TEST_AUTH_TOKEN not set — skipping auth tests")
+        pytest.exit("AIM_TEST_AUTH_TOKEN not set — aborting smoke suite", returncode=1)
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {smoke_auth_token}",
@@ -96,11 +90,12 @@ async def smoke_auth_client(
 
 
 @pytest_asyncio.fixture(scope="session")
-async def smoke_client(smoke_api_key: str) -> AsyncIterator[httpx.AsyncClient]:
+async def smoke_client(smoke_auth_token: str | None) -> AsyncIterator[httpx.AsyncClient]:
+    if not smoke_auth_token:
+        pytest.exit("AIM_TEST_AUTH_TOKEN not set — aborting smoke suite", returncode=1)
     headers = {
         "Accept": "application/json",
-        # Internal smoke endpoints expect the API key in X-Internal-API-Key, not Bearer auth.
-        "X-Internal-API-Key": smoke_api_key,
+        "Authorization": f"Bearer {smoke_auth_token}",
     }
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(

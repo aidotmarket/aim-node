@@ -23,12 +23,12 @@ jobs:
 
       - name: Verify test secret
         run: |
-          if [ -z "$AIM_TEST_API_KEY" ]; then
-            echo "::error::AIM_TEST_API_KEY secret is not set"
+          if [ -z "$AIM_TEST_AUTH_TOKEN" ]; then
+            echo "::error::AIM_TEST_AUTH_TOKEN secret is not set"
             exit 1
           fi
         env:
-          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
+          AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
 
       - name: Verify required secrets
         run: |
@@ -41,7 +41,6 @@ jobs:
 
       - name: Run smoke tests
         env:
-          AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_EMAIL: ${{ secrets.AIM_TEST_EMAIL }}
           AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
         run: |
