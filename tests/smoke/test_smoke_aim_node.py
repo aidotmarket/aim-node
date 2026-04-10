@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime
+import hashlib
 from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from aim_node.core.crypto import DeviceCrypto
 
@@ -16,15 +17,11 @@ def _assert_status(response: httpx.Response, expected: tuple[int, ...]) -> None:
         f"{response.request.url}: {response.text}"
     )
 
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 async def _register_node(
     client: httpx.AsyncClient,
     smoke_state: dict[str, object],
-    test_run_id: str,
+    smoke_cleanup: dict[str, list[str]],
+    smoke_email: str,
     *,
     mode: str,
 ) -> dict[str, Any]:
@@ -33,9 +30,20 @@ async def _register_node(
     if cached is not None:
         return cached
 
-    private_key, public_key = DeviceCrypto.generate_ed25519_keypair()
+    seed = hashlib.sha256(
+        f"aim-node-smoke:{smoke_email.lower()}:{mode}".encode("utf-8")
+    ).digest()
+    private_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
+    public_key = private_key.public_key()
     public_key_b64 = base64.b64encode(public_key.public_bytes_raw()).decode("ascii")
-    endpoint_url = f"https://example.com/aim-node-smoke/{test_run_id}/{mode}"
+    stable_suffix = hashlib.sha256(
+        f"{smoke_email.lower()}:{mode}".encode("utf-8")
+    ).hexdigest()[:16]
+    # The production API does not expose a documented node deregistration route in this
+    # repository, so smoke registration reuses a deterministic keypair and endpoint URL.
+    # Re-running the suite updates the same logical node instead of creating unbounded
+    # one-off registrations when cleanup endpoints are unavailable.
+    endpoint_url = f"https://example.com/aim-node-smoke/{stable_suffix}/{mode}"
 
     challenge_response = await client.post(
         "/api/v1/aim/nodes/register/challenge",
@@ -73,6 +81,7 @@ async def _register_node(
         "endpoint_url": endpoint_url,
     }
     registrations[mode] = record
+    smoke_cleanup["node_ids"].append(record["node_id"])
     return record
 
 
@@ -96,34 +105,52 @@ async def _discover_listings(
 async def _negotiate_session(
     client: httpx.AsyncClient,
     smoke_state: dict[str, object],
-    test_run_id: str,
+    smoke_cleanup: dict[str, list[str]],
+    smoke_email: str,
 ) -> dict[str, Any]:
     cached = smoke_state.get("session")
     if cached is not None:
         return cached
 
-    buyer_node = await _register_node(client, smoke_state, test_run_id, mode="buyer")
+    buyer_node = await _register_node(
+        client,
+        smoke_state,
+        smoke_cleanup,
+        smoke_email,
+        mode="buyer",
+    )
     listings = await _discover_listings(client, smoke_state)
     listing = next((item for item in listings if item.get("status") == "active"), None)
-    if listing is None and listings:
-        listing = listings[0]
     if listing is None:
-        pytest.skip("No AIM listings are currently discoverable in production")
+        pytest.skip("No active listings available for session negotiation")
 
-    response = await client.post(
-        "/api/v1/aim/sessions",
-        json={
-            "node_id": buyer_node["node_id"],
-            "listing_id": listing["listing_id"],
-            "tool_name": listing["tool_name"],
-            "spend_cap_cents": 0,
-        },
-    )
-    _assert_status(response, (200, 201))
+    listing_id = listing.get("listing_id") or listing.get("id")
+    assert listing_id, f"active listing missing identifier: {listing}"
+    assert listing.get("tool_name"), f"active listing missing tool_name: {listing}"
 
-    payload = response.json()
-    smoke_state["session"] = payload
-    return payload
+    session_payload: dict[str, Any] | None = None
+    try:
+        response = await client.post(
+            "/api/v1/aim/sessions",
+            json={
+                "node_id": buyer_node["node_id"],
+                "listing_id": listing_id,
+                "tool_name": listing["tool_name"],
+                "spend_cap_cents": 0,
+            },
+        )
+        _assert_status(response, (200, 201))
+
+        session_payload = response.json()
+        smoke_cleanup["session_ids"].append(session_payload["session_id"])
+        smoke_state["session"] = session_payload
+        return session_payload
+    finally:
+        if session_payload is not None and "session" not in smoke_state:
+            response = await client.post(
+                f"/api/v1/aim/sessions/{session_payload['session_id']}/close"
+            )
+            _assert_status(response, (200, 202, 204, 404, 405))
 
 
 @pytest.mark.asyncio
@@ -143,13 +170,18 @@ async def test_auth_valid(
 
 
 @pytest.mark.asyncio
-async def test_device_register(
+async def test_consumer_register(
     smoke_client: httpx.AsyncClient,
     smoke_state: dict[str, object],
-    test_run_id: str,
+    smoke_cleanup: dict[str, list[str]],
+    smoke_email: str,
 ) -> None:
     registration = await _register_node(
-        smoke_client, smoke_state, test_run_id, mode="buyer"
+        smoke_client,
+        smoke_state,
+        smoke_cleanup,
+        smoke_email,
+        mode="buyer",
     )
     assert registration["node_id"]
     smoke_state["device_id"] = registration["node_id"]
@@ -159,10 +191,15 @@ async def test_device_register(
 async def test_provider_register(
     smoke_client: httpx.AsyncClient,
     smoke_state: dict[str, object],
-    test_run_id: str,
+    smoke_cleanup: dict[str, list[str]],
+    smoke_email: str,
 ) -> None:
     seller_node = await _register_node(
-        smoke_client, smoke_state, test_run_id, mode="seller"
+        smoke_client,
+        smoke_state,
+        smoke_cleanup,
+        smoke_email,
+        mode="seller",
     )
     response = await smoke_client.post(
         "/api/v1/aim/relay/register",
@@ -180,32 +217,18 @@ async def test_consumer_discovery(
 ) -> None:
     results = await _discover_listings(smoke_client, smoke_state)
     assert isinstance(results, list)
+    assert len(results) > 0, "Discovery returned no results — marketplace may be empty"
+    assert all(
+        isinstance(item, dict)
+        and any(key in item and item[key] for key in ("id", "listing_id", "slug"))
+        for item in results
+    ), "Discovery results missing an identifier field"
 
 
 @pytest.mark.asyncio
 async def test_trace_submit(
-    smoke_client: httpx.AsyncClient,
-    smoke_state: dict[str, object],
-    test_run_id: str,
 ) -> None:
-    session = await _negotiate_session(smoke_client, smoke_state, test_run_id)
-    timestamp = _now_iso()
-    response = await smoke_client.post(
-        "/api/v1/aim/traces/events",
-        json={
-            "event": {
-                "trace_id": session["trace_id"],
-                "session_id": session["session_id"],
-                "event_type": "request_sent",
-                "source": "buyer_app",
-                "node_timestamp": timestamp,
-                "metadata": {"test_run_id": test_run_id},
-            },
-            "signature": "0" * 64,
-            "timestamp": timestamp,
-            "nonce": f"{test_run_id}trace1234",
-        },
+    """Disabled in production smoke: trace-event writes have no cleanup endpoint."""
+    pytest.skip(
+        "Trace smoke test skipped because production trace-event writes cannot be cleaned up"
     )
-    _assert_status(response, (200, 201))
-    payload = response.json()
-    assert payload["event_id"]
