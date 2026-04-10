@@ -28,6 +28,10 @@ async def test_full_setup_finalize_lifecycle(fresh_app, tmp_data_dir, monkeypatc
     app, state, pm = fresh_app
     patch_httpx(monkeypatch, status_code=200, json_data={"version": "1.0.0"})
 
+    # Mock autostart so finalize doesn't spawn a real uvicorn server
+    original_autostart = pm.autostart
+    pm.autostart = AsyncMock()
+
     try:
         async with make_client(app) as client:
             # Step 1: Check initial status
@@ -76,6 +80,7 @@ async def test_full_setup_finalize_lifecycle(fresh_app, tmp_data_dir, monkeypatc
             assert dash["provider_running"] is False
             # consumer_running may be True due to autostart after finalize
     finally:
+        pm.autostart = original_autostart
         await pm.shutdown()
 
 

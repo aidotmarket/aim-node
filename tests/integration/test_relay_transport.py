@@ -459,29 +459,29 @@ async def test_recv_frame_close_sends_close_ack(tmp_path):
     transport._traffic_keys = MagicMock()
     transport._is_initiator = True
 
-    sent_frames = []
-    recv_call_count = 0
+    close_payload = serialize_payload(ClosePayload(reason="seller_done"))
 
-    # We need to go through the real recv_frame logic, so mock _ws and crypto
+    # Mock websocket to return dummy bytes (decrypt_frame is patched below)
     mock_ws = AsyncMock()
+    mock_ws.recv = AsyncMock(return_value=b"encrypted-close-frame")
+    transport._ws = mock_ws
 
-    # First recv returns a CLOSE frame, simulated through the real decrypt path
-    # But since decrypt_frame is complex, let's patch recv_frame at a lower level
-    original_recv_frame = transport.recv_frame
+    # Track what send_frame sends
+    sent_frames = []
+    original_send_frame = transport.send_frame
 
-    async def fake_recv_frame():
-        nonlocal recv_call_count
-        recv_call_count += 1
-        if recv_call_count == 1:
-            # Simulate receiving CLOSE + auto-sending CLOSE_ACK
-            sent_frames.append(FRAME_CLOSE_ACK)
-            return (FRAME_CLOSE, serialize_payload(ClosePayload(reason="seller_done")))
-        raise RuntimeError("no more frames")
+    async def tracking_send_frame(frame_type, payload):
+        sent_frames.append(frame_type)
 
-    transport.recv_frame = fake_recv_frame
+    transport.send_frame = tracking_send_frame
 
-    try:
+    # Patch decrypt_frame to return FRAME_CLOSE with sequence 0
+    with patch(
+        "aim_node.relay.transport.decrypt_frame",
+        return_value=(FRAME_CLOSE, 0, close_payload),
+    ):
         frame_type, plaintext = await transport.recv_frame()
-        assert frame_type == FRAME_CLOSE
-    finally:
-        pass
+
+    assert frame_type == FRAME_CLOSE
+    assert plaintext == close_payload
+    assert FRAME_CLOSE_ACK in sent_frames
