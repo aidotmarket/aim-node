@@ -38,3 +38,6 @@ include = ["aim_node*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.pytest-asyncio]
+loop_scope = "session"

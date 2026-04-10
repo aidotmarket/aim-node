@@ -31,15 +31,11 @@ def smoke_api_key() -> str:
 
 
 @pytest.fixture(scope="session")
-def event_loop_policy():
-    import asyncio
-
-    return asyncio.DefaultEventLoopPolicy()
+def smoke_auth_token() -> str | None:
+    return os.environ.get("AIM_TEST_AUTH_TOKEN")
 
 
-async def _cleanup_node_registration(
-    client: httpx.AsyncClient, node_id: str
-) -> None:
+async def _cleanup_node_registration(client: httpx.AsyncClient, node_id: str) -> None:
     cleanup_attempts = (
         ("DELETE", f"/api/v1/aim/nodes/{node_id}"),
         ("POST", f"/api/v1/aim/nodes/{node_id}/deregister"),
@@ -83,17 +79,18 @@ def smoke_state() -> dict[str, object]:
 
 
 @pytest_asyncio.fixture(scope="session")
-async def smoke_auth_client(smoke_api_key: str) -> AsyncIterator[httpx.AsyncClient]:
+async def smoke_auth_client(
+    smoke_auth_token: str | None,
+) -> AsyncIterator[httpx.AsyncClient]:
+    if not smoke_auth_token:
+        pytest.skip("AIM_TEST_AUTH_TOKEN not set — skipping auth tests")
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {smoke_api_key}",
+        "Authorization": f"Bearer {smoke_auth_token}",
     }
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(
-        base_url=BASE_URL,
-        headers=headers,
-        timeout=timeout,
-        follow_redirects=True,
+        base_url=BASE_URL, headers=headers, timeout=timeout, follow_redirects=True
     ) as client:
         yield client
 

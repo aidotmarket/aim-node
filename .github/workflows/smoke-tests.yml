@@ -43,5 +43,6 @@ jobs:
         env:
           AIM_TEST_API_KEY: ${{ secrets.AIM_TEST_API_KEY }}
           AIM_TEST_EMAIL: ${{ secrets.AIM_TEST_EMAIL }}
+          AIM_TEST_AUTH_TOKEN: ${{ secrets.AIM_TEST_AUTH_TOKEN }}
         run: |
           pytest tests/smoke/ -v --tb=short
