@@ -83,10 +83,14 @@ async def smoke_auth_client(
         "Authorization": f"Bearer {smoke_auth_token}",
     }
     timeout = httpx.Timeout(30.0, connect=10.0)
-    async with httpx.AsyncClient(
+    client = httpx.AsyncClient(
         base_url=BASE_URL, headers=headers, timeout=timeout, follow_redirects=True
-    ) as client:
-        yield client
+    )
+    yield client
+    try:
+        await client.aclose()
+    except RuntimeError:
+        pass
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -101,13 +105,17 @@ async def smoke_client(smoke_auth_token: str | None) -> AsyncIterator[httpx.Asyn
     if api_key:
         headers["X-Internal-API-Key"] = api_key
     timeout = httpx.Timeout(30.0, connect=10.0)
-    async with httpx.AsyncClient(
+    client = httpx.AsyncClient(
         base_url=BASE_URL,
         headers=headers,
         timeout=timeout,
         follow_redirects=True,
-    ) as client:
-        yield client
+    )
+    yield client
+    try:
+        await client.aclose()
+    except RuntimeError:
+        pass
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -117,8 +125,11 @@ async def smoke_cleanup(
     tracked = {"node_ids": [], "session_ids": []}
     yield tracked
 
-    for session_id in reversed(tracked["session_ids"]):
-        await _close_session(smoke_client, session_id)
+    try:
+        for session_id in reversed(tracked["session_ids"]):
+            await _close_session(smoke_client, session_id)
 
-    for node_id in reversed(tracked["node_ids"]):
-        await _cleanup_node_registration(smoke_client, node_id)
+        for node_id in reversed(tracked["node_ids"]):
+            await _cleanup_node_registration(smoke_client, node_id)
+    except RuntimeError:
+        pass
