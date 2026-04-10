@@ -156,17 +156,17 @@ def tmp_data_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def fresh_app(tmp_data_dir: Path):
+async def fresh_app(tmp_data_dir: Path):
     """App with no setup done."""
     app, state, pm = build_app(tmp_data_dir)
     try:
         yield app, state, pm
     finally:
-        pass  # no async cleanup needed for ASGI transport
+        await pm.shutdown()
 
 
 @pytest.fixture
-def setup_consumer_app(tmp_data_dir: Path):
+async def setup_consumer_app(tmp_data_dir: Path):
     """Setup-complete app in consumer mode."""
     write_runtime_config(tmp_data_dir, mode="consumer")
     create_keystore(tmp_data_dir, passphrase="")
@@ -175,11 +175,11 @@ def setup_consumer_app(tmp_data_dir: Path):
     try:
         yield app, state, pm
     finally:
-        pass
+        await pm.shutdown()
 
 
 @pytest.fixture
-def setup_provider_app(tmp_data_dir: Path):
+async def setup_provider_app(tmp_data_dir: Path):
     """Setup-complete app in provider mode."""
     write_runtime_config(tmp_data_dir, mode="provider")
     create_keystore(tmp_data_dir, passphrase="")
@@ -188,11 +188,11 @@ def setup_provider_app(tmp_data_dir: Path):
     try:
         yield app, state, pm
     finally:
-        pass
+        await pm.shutdown()
 
 
 @pytest.fixture
-def setup_both_app(tmp_data_dir: Path):
+async def setup_both_app(tmp_data_dir: Path):
     """Setup-complete app in both mode."""
     write_runtime_config(tmp_data_dir, mode="both")
     create_keystore(tmp_data_dir, passphrase="")
@@ -201,11 +201,11 @@ def setup_both_app(tmp_data_dir: Path):
     try:
         yield app, state, pm
     finally:
-        pass
+        await pm.shutdown()
 
 
 @pytest.fixture
-def locked_app(tmp_data_dir: Path):
+async def locked_app(tmp_data_dir: Path):
     """Setup-complete app with encrypted keystore (locked)."""
     write_runtime_config(tmp_data_dir, mode="provider")
     create_keystore(tmp_data_dir, passphrase="test-pass-123")
@@ -214,4 +214,4 @@ def locked_app(tmp_data_dir: Path):
     try:
         yield app, state, pm
     finally:
-        pass
+        await pm.shutdown()

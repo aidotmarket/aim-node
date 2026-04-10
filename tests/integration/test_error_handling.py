@@ -7,12 +7,13 @@ cases across management API, consumer proxy, and protocol layers.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from aim_node.consumer.proxy import LocalProxy
-from aim_node.consumer.session_manager import SessionInvokeError
+from aim_node.consumer.session_manager import SessionInvokeError, SessionManager
 from aim_node.relay.protocol import (
     FRAME_HEARTBEAT,
     FRAME_HEARTBEAT_ACK,
@@ -342,3 +343,122 @@ def test_close_payload_message_too_long_raises():
     payload = ClosePayload(reason="error", message="x" * 501)
     with pytest.raises(ValueError, match="500"):
         serialize_payload(payload)
+
+
+# ---------------------------------------------------------------------------
+# Invalid token coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_management_setup_test_connection_invalid_token(fresh_app, monkeypatch):
+    """Test-connection with an invalid API key reports not reachable."""
+    app, state, pm = fresh_app
+    # Simulate the market API returning 401 for bad token
+    patch_httpx(monkeypatch, status_code=401)
+    async with make_client(app) as client:
+        r = await client.post(
+            "/api/mgmt/setup/test-connection",
+            json={"api_url": "https://api.example.test", "api_key": "INVALID-TOKEN"},
+        )
+    assert r.status_code == 200
+    assert r.json()["reachable"] is False
+
+
+@pytest.mark.asyncio
+async def test_management_setup_test_connection_malformed_token(fresh_app, monkeypatch):
+    """Test-connection with a malformed (empty) API key reports not reachable."""
+    app, state, pm = fresh_app
+    patch_httpx(monkeypatch, status_code=403)
+    async with make_client(app) as client:
+        r = await client.post(
+            "/api/mgmt/setup/test-connection",
+            json={"api_url": "https://api.example.test", "api_key": ""},
+        )
+    assert r.status_code == 200
+    assert r.json()["reachable"] is False
+
+
+@pytest.mark.asyncio
+async def test_proxy_invoke_with_invalid_token_returns_401(core_config):
+    """Invalid/rejected token through invoke path returns 401 (code 1003)."""
+    sm, client = _error_proxy_client(
+        core_config, SessionInvokeError(1003, "invalid token")
+    )
+    try:
+        async with client:
+            r = await client.post("/aim/invoke/sess-bad-token", json={"prompt": "hi"})
+        assert r.status_code == 401
+        assert r.json()["code"] == 1003
+    finally:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_direct_invoke_invalid_token_from_seller(core_config, monkeypatch):
+    """Direct invoke where seller returns 401 (token rejected) raises 1003-like error."""
+    from types import SimpleNamespace
+    from aim_node.consumer.session_manager import SessionManager
+
+    _original_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(
+            lambda req: httpx.Response(
+                401, json={"error": "invalid token"}, request=req
+            )
+        )
+        return _original_client(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "aim_node.consumer.session_manager.httpx.AsyncClient", patched_client
+    )
+
+    market = SimpleNamespace(
+        negotiate_session=lambda **kw: _async_return({
+            "session_id": "sess-bad-tok",
+            "connection_mode": "direct",
+            "endpoint_url": "http://seller.test/invoke",
+            "session_token": "INVALID-JWT",
+            "expires_at": "2026-04-10T12:00:00Z",
+        })(**kw if False else {}),
+        close_session=lambda sid: _async_return(None)(),
+        keepalive_session=lambda sid: _async_return(None)(),
+        search_listings=lambda q: _async_return([])(),
+        get_listing=lambda lid: _async_return({})(),
+    )
+    # Build the market namespace manually with proper async functions
+    async def negotiate_session(**kw):
+        return {
+            "session_id": "sess-bad-tok",
+            "connection_mode": "direct",
+            "endpoint_url": "http://seller.test/invoke",
+            "session_token": "INVALID-JWT",
+            "expires_at": "2026-04-10T12:00:00Z",
+        }
+    async def noop(*a, **kw):
+        return None
+    async def empty_list(*a, **kw):
+        return []
+    async def empty_dict(*a, **kw):
+        return {}
+
+    market = SimpleNamespace(
+        negotiate_session=negotiate_session,
+        close_session=noop,
+        keepalive_session=noop,
+        search_listings=empty_list,
+        get_listing=empty_dict,
+    )
+
+    manager = SessionManager(core_config, market)
+    try:
+        await manager.connect("listing-badtok", 500)
+        # Seller returns 401 — this should NOT be a 5xx adapter error.
+        # The session manager treats non-rate-limit, non-5xx errors as
+        # response data, so a 401 comes back as the response body.
+        body, headers = await manager.invoke("sess-bad-tok", b'{"prompt":"hi"}')
+        resp = json.loads(body)
+        assert resp.get("error") == "invalid token"
+    finally:
+        await manager.close_session("sess-bad-tok")

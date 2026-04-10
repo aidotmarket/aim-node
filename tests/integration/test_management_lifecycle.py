@@ -28,52 +28,55 @@ async def test_full_setup_finalize_lifecycle(fresh_app, tmp_data_dir, monkeypatc
     app, state, pm = fresh_app
     patch_httpx(monkeypatch, status_code=200, json_data={"version": "1.0.0"})
 
-    async with make_client(app) as client:
-        # Step 1: Check initial status
-        r = await client.get("/api/mgmt/setup/status")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["setup_complete"] is False
-        assert body["current_step"] == 0
+    try:
+        async with make_client(app) as client:
+            # Step 1: Check initial status
+            r = await client.get("/api/mgmt/setup/status")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["setup_complete"] is False
+            assert body["current_step"] == 0
 
-        # Step 2: Generate keypair
-        r = await client.post("/api/mgmt/setup/keypair", json={"passphrase": ""})
-        assert r.status_code == 200
-        assert r.json()["created"] is True
-        fingerprint = r.json()["fingerprint"]
-        assert len(fingerprint) == 64
+            # Step 2: Generate keypair
+            r = await client.post("/api/mgmt/setup/keypair", json={"passphrase": ""})
+            assert r.status_code == 200
+            assert r.json()["created"] is True
+            fingerprint = r.json()["fingerprint"]
+            assert len(fingerprint) == 64
 
-        # Step 3: Test connection
-        r = await client.post(
-            "/api/mgmt/setup/test-connection",
-            json={"api_url": "https://api.example.test", "api_key": "key-1"},
-        )
-        assert r.status_code == 200
-        assert r.json()["reachable"] is True
+            # Step 3: Test connection
+            r = await client.post(
+                "/api/mgmt/setup/test-connection",
+                json={"api_url": "https://api.example.test", "api_key": "key-1"},
+            )
+            assert r.status_code == 200
+            assert r.json()["reachable"] is True
 
-        # Step 4: Finalize
-        r = await client.post(
-            "/api/mgmt/setup/finalize",
-            json={
-                "mode": "consumer",
-                "api_url": "https://api.example.test",
-                "api_key": "key-1",
-            },
-        )
-        assert r.status_code == 200
-        assert r.json()["ok"] is True
+            # Step 4: Finalize
+            r = await client.post(
+                "/api/mgmt/setup/finalize",
+                json={
+                    "mode": "consumer",
+                    "api_url": "https://api.example.test",
+                    "api_key": "key-1",
+                },
+            )
+            assert r.status_code == 200
+            assert r.json()["ok"] is True
 
-        # Step 5: Verify setup complete
-        r = await client.get("/api/mgmt/setup/status")
-        assert r.json()["setup_complete"] is True
+            # Step 5: Verify setup complete
+            r = await client.get("/api/mgmt/setup/status")
+            assert r.json()["setup_complete"] is True
 
-        # Step 6: Dashboard
-        r = await client.get("/api/mgmt/status")
-        assert r.status_code == 200
-        dash = r.json()
-        assert dash["market_connected"] is True
-        assert dash["provider_running"] is False
-        # consumer_running may be True due to autostart after finalize
+            # Step 6: Dashboard
+            r = await client.get("/api/mgmt/status")
+            assert r.status_code == 200
+            dash = r.json()
+            assert dash["market_connected"] is True
+            assert dash["provider_running"] is False
+            # consumer_running may be True due to autostart after finalize
+    finally:
+        await pm.shutdown()
 
 
 @pytest.mark.asyncio
@@ -114,6 +117,7 @@ async def test_unlock_then_autostart(locked_app, monkeypatch):
         nonlocal autostart_called
         autostart_called = True
 
+    original_autostart = pm.autostart
     pm.autostart = fake_autostart
     try:
         async with make_client(app) as client:
@@ -122,7 +126,7 @@ async def test_unlock_then_autostart(locked_app, monkeypatch):
         assert r.json()["unlocked"] is True
         assert autostart_called is True
     finally:
-        pm.autostart = fake_autostart  # no real cleanup needed
+        pm.autostart = original_autostart
 
 
 @pytest.mark.asyncio
