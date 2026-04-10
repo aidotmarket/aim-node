@@ -20,6 +20,11 @@ dependencies = [
 
 [project.optional-dependencies]
 management = ["tomli_w>=1.0"]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
 dev = [
     "pytest",
     "pytest-asyncio",
