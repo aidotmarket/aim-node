@@ -57,8 +57,8 @@ async def _register_node(
     _assert_status(challenge_response, (200,))
 
     challenge = challenge_response.json()["challenge"]
-    signature = base64.b64encode(
-        DeviceCrypto.sign(private_key, bytes.fromhex(challenge))
+    signature = base64.urlsafe_b64encode(
+        DeviceCrypto.sign(private_key, challenge.encode("utf-8"))
     ).decode("ascii")
 
     register_response = await client.post(
