@@ -14,10 +14,28 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from aim_node.management.config_writer import read_config
 from aim_node.management.errors import (
     ErrorCode,
     HTTP_STATUS_TO_CODE,
     make_error,
+)
+from aim_node.management.facade import MarketplaceFacade
+from aim_node.management.marketplace import (
+    discover,
+    earnings_history,
+    listings,
+    marketplace_earnings,
+    marketplace_node,
+    marketplace_trust,
+    sessions,
+    settlements,
+    tool_delete,
+    tool_update,
+    tools_list,
+    tools_publish,
+    traces,
+    trust_events,
 )
 from aim_node.management.middleware import CSRFMiddleware
 from aim_node.management.process import (
@@ -52,6 +70,16 @@ from aim_node.management.state import ProcessStateStore
 logger = logging.getLogger(__name__)
 
 
+def _load_core_config(raw: dict) -> "AIMCoreConfig | None":
+    from aim_node.config_loader import load_config
+    from aim_node.core.config import AIMCoreConfig
+
+    try:
+        return load_config(raw)
+    except Exception:
+        return None
+
+
 def _routes() -> list[Route]:
     return [
         Route("/api/mgmt/health", health, methods=["GET"]),
@@ -77,6 +105,48 @@ def _routes() -> list[Route]:
         ),
         Route("/api/mgmt/unlock", unlock, methods=["POST"]),
         Route("/api/mgmt/keypair", keypair_info, methods=["GET"]),
+        Route("/api/mgmt/marketplace/node", marketplace_node, methods=["GET"]),
+        Route("/api/mgmt/marketplace/tools", tools_list, methods=["GET"]),
+        Route(
+            "/api/mgmt/marketplace/tools/publish",
+            tools_publish,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/mgmt/marketplace/tools/{tool_id}",
+            tool_update,
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/mgmt/marketplace/tools/{tool_id}",
+            tool_delete,
+            methods=["DELETE"],
+        ),
+        Route(
+            "/api/mgmt/marketplace/earnings",
+            marketplace_earnings,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/mgmt/marketplace/earnings/history",
+            earnings_history,
+            methods=["GET"],
+        ),
+        Route("/api/mgmt/marketplace/sessions", sessions, methods=["GET"]),
+        Route(
+            "/api/mgmt/marketplace/settlements",
+            settlements,
+            methods=["GET"],
+        ),
+        Route("/api/mgmt/marketplace/trust", marketplace_trust, methods=["GET"]),
+        Route(
+            "/api/mgmt/marketplace/trust/events",
+            trust_events,
+            methods=["GET"],
+        ),
+        Route("/api/mgmt/marketplace/traces", traces, methods=["GET"]),
+        Route("/api/mgmt/marketplace/listings", listings, methods=["GET"]),
+        Route("/api/mgmt/marketplace/discover", discover, methods=["POST"]),
     ]
 
 
@@ -174,6 +244,15 @@ def create_management_app(
         app.state.remote_bind = remote_bind
         app.state.session_token = None
         try:
+            raw_config = read_config(data_dir)
+            core_cfg = _load_core_config(raw_config)
+            if core_cfg is None:
+                raise ValueError("invalid config")
+            app.state.facade = MarketplaceFacade.create(core_cfg)
+        except Exception:
+            app.state.facade = None
+            logger.info("MarketplaceFacade not initialized — node not yet configured")
+        try:
             yield
         finally:
             try:
@@ -208,5 +287,6 @@ def create_management_app(
     )
     app.state.remote_bind = remote_bind
     app.state.session_token = None
+    app.state.facade = None
     app.add_middleware(CSRFMiddleware)
     return app

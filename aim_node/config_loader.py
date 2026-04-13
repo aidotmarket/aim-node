@@ -87,6 +87,7 @@ def load_config(raw: dict) -> AIMCoreConfig:
             AIMCoreConfig.reconnect_jitter,
         ),
         api_key=_optional_str(core.get("api_key", raw.get("api_key")), "core.api_key"),
+        node_id=_optional_str(core.get("node_id", raw.get("node_id")), "core.node_id"),
     )
 
 

@@ -15,3 +15,4 @@ class AIMCoreConfig:
     reconnect_max_delay_s: float = 60.0
     reconnect_jitter: float = 0.3
     api_key: str | None = None
+    node_id: str | None = None
