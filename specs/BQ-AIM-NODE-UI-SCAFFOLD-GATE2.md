@@ -5,13 +5,13 @@
 **Epic:** AIM-NODE-UI
 **Phase:** 2 — Implementation
 **Prerequisite:** Gate 1 approved (S432)
-**Author:** Vulcan (S435)
+**Author:** Vulcan (S435, R3 S436)
 
 ---
 
 ## Overview
 
-Scaffold the React SPA that runs inside the AIM Node Docker container. This creates the foundational project structure, app shell, routing, API client, state management, and brand system. All downstream UI BQs (Dashboard, Tools, Earnings, Setup Wizard, etc.) build on this foundation.
+Scaffold the React SPA that runs inside the AIM Node Docker container. This creates the foundational project structure, app shell, routing, API client, state management, brand system, and base component primitives. All downstream UI BQs (Dashboard, Tools, Earnings, Setup Wizard, etc.) build on this foundation.
 
 ## Codebase Baseline
 
@@ -27,7 +27,7 @@ aim_node/
 
 ---
 
-## Slice A: Project Setup + Brand System + App Shell (est 5h)
+## Slice A: Project Setup + Brand System + App Shell + Base Components (est 6h)
 
 ### A.1 Project Initialization
 
@@ -44,6 +44,7 @@ frontend/
     ├── main.tsx          # React root
     ├── App.tsx           # Router + layout
     ├── vite-env.d.ts
+    ├── components/ui/    # Base component primitives
     └── ...
 ```
 
@@ -95,20 +96,120 @@ export default {
 
 Import Plus Jakarta Sans via `@fontsource/plus-jakarta-sans` npm package (no CDN dependency).
 
-### A.3 App Shell Layout
+### A.3 Base Component Primitives
+
+All downstream BQs depend on these shared components. Each component uses brand tokens and follows consistent API patterns.
+
+```typescript
+// src/components/ui/Button.tsx
+interface ButtonProps {
+  variant: 'primary' | 'secondary' | 'ghost' | 'danger';
+  size?: 'sm' | 'md' | 'lg';
+  loading?: boolean;
+  disabled?: boolean;
+  children: React.ReactNode;
+  onClick?: () => void;
+}
+// primary: bg-brand-indigo text-white
+// secondary: border border-brand-indigo text-brand-indigo
+// ghost: text-brand-text-secondary hover:bg-brand-surface
+// danger: bg-brand-error text-white
+// loading: spinner icon replaces children
+
+// src/components/ui/Card.tsx
+interface CardProps {
+  children: React.ReactNode;
+  className?: string;
+  padding?: 'none' | 'sm' | 'md' | 'lg';
+}
+// White bg, rounded-brand, border border-[#E8E8E8], shadow-sm
+
+// src/components/ui/Badge.tsx
+interface BadgeProps {
+  variant: 'success' | 'warning' | 'error' | 'info' | 'neutral';
+  children: React.ReactNode;
+}
+// success: bg-[#E1F5EE] text-brand-teal
+// warning: bg-amber-50 text-amber-700
+// error: bg-red-50 text-brand-error
+// info: bg-indigo-50 text-brand-indigo
+// neutral: bg-gray-100 text-brand-text-secondary
+
+// src/components/ui/Input.tsx
+interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  label?: string;
+  error?: string;
+  hint?: string;
+}
+// Label above, input with rounded-brand border-[#E8E8E8], error text below in brand-error
+
+// src/components/ui/Field.tsx
+interface FieldProps {
+  label: string;
+  children: React.ReactNode;
+  error?: string;
+  hint?: string;
+  required?: boolean;
+}
+// Generic field wrapper for any form control (Input, Select, Textarea, etc.)
+
+// src/components/ui/StatusBadge.tsx
+interface StatusBadgeProps {
+  status: 'healthy' | 'degraded' | 'unknown' | 'locked' | 'error';
+}
+// Maps status to Badge variant + icon (CheckCircle, AlertTriangle, HelpCircle, Lock, XCircle)
+
+// src/components/ui/PageHeader.tsx
+interface PageHeaderProps {
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;  // Right-aligned action buttons
+}
+// Consistent page title styling: text-2xl font-semibold text-brand-text + optional description
+
+// src/components/ui/Spinner.tsx
+interface SpinnerProps {
+  size?: 'sm' | 'md' | 'lg';
+}
+// Animated SVG spinner using brand-indigo
+
+// src/components/ui/EmptyState.tsx
+interface EmptyStateProps {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}
+// Centered card with icon, title, description, optional action button
+```
+
+**Component export barrel:** `src/components/ui/index.ts` re-exports all primitives for clean imports:
+```typescript
+export { Button } from './Button';
+export { Card } from './Card';
+export { Badge } from './Badge';
+export { Input } from './Input';
+export { Field } from './Field';
+export { StatusBadge } from './StatusBadge';
+export { PageHeader } from './PageHeader';
+export { Spinner } from './Spinner';
+export { EmptyState } from './EmptyState';
+```
+
+### A.4 App Shell Layout
 
 ```typescript
 // src/layouts/AppLayout.tsx
 // Responsive sidebar (collapsible on mobile) + top bar + main content
 // Sidebar nav items: Dashboard, Tools, Earnings, Sessions, Logs, Settings
-// Top bar: AIM Node logo + node status badge (healthy/degraded/unknown)
+// Top bar: AIM Node logo + node StatusBadge (healthy/degraded/unknown)
 // Bottom-right: allAI chat widget toggle
 
 // src/layouts/SetupLayout.tsx
-// Minimal layout for setup flow — centered card, no sidebar
+// Minimal layout for setup flow — centered Card, no sidebar
 ```
 
-### A.4 Route Definitions
+### A.5 Route Definitions
 
 ```typescript
 // src/router.tsx
@@ -145,32 +246,36 @@ function RootRedirect() {
 }
 ```
 
-### A.5 Placeholder Pages
+### A.6 Placeholder Pages
 
-Each placeholder: centered card with route name, Lucide icon, and "Coming Soon" text. Consistent style using brand tokens.
+Each placeholder: uses `EmptyState` component with route-specific Lucide icon and "Coming Soon" text.
 
 ```typescript
 // src/pages/placeholders/DashboardPlaceholder.tsx
 export default function DashboardPlaceholder() {
   return (
-    <PlaceholderPage
-      icon={<LayoutDashboard />}
-      title="Dashboard"
-      description="Provider health, sessions, and metrics at a glance."
-    />
+    <>
+      <PageHeader title="Dashboard" description="Provider health, sessions, and metrics at a glance." />
+      <EmptyState
+        icon={<LayoutDashboard />}
+        title="Coming Soon"
+        description="Dashboard will show real-time provider metrics."
+      />
+    </>
   );
 }
 ```
 
-### A.6 Done Criteria — Slice A
+### A.7 Done Criteria — Slice A
 - `npm ci && npm run build` succeeds (Node 20 LTS)
 - Build output in `frontend/dist/` with hashed assets
 - Brand colors + Plus Jakarta Sans applied
+- All 9 base component primitives implemented and exported (Button, Card, Badge, Input, Field, StatusBadge, PageHeader, Spinner, EmptyState)
 - App shell renders with sidebar, top bar, routing
-- All 11 routes accessible with placeholder content
+- All 11 routes accessible with placeholder content using base components
 - Root redirect handles three states (loading → locked → setup → dashboard)
 - `npm run dev` proxies API calls to :8080
-- Tests: Vitest, 10+ (route rendering, redirect logic, layout rendering)
+- Tests: Vitest, 15+ (route rendering, redirect logic, layout rendering, each base component renders with all variants)
 
 ---
 
@@ -208,7 +313,17 @@ class ApiClient {
     return res.json();
   }
 
-  // Similarly: put, delete
+  async delete<T>(path: string): Promise<T> {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'DELETE',
+      headers: {
+        ...(this.csrfToken ? { 'X-CSRF-Token': this.csrfToken } : {}),
+      },
+    });
+    this.extractCsrf(res);
+    if (!res.ok) throw await this.parseError(res);
+    return res.json();
+  }
 
   private extractCsrf(res: Response) {
     const token = res.headers.get('X-CSRF-Token');
@@ -279,7 +394,8 @@ export const useNodeStore = create<NodeState>((set) => ({
   loading: true,
   bootstrap: async () => {
     try {
-      // GET /api/mgmt/health returns: { healthy, setup_complete, locked, csrf_token, session_token }
+      // Single GET /api/mgmt/health returns all bootstrap fields:
+      // { healthy, setup_complete, locked, csrf_token, session_token }
       const health = await api.get<HealthResponse>('/health');
       set({
         setupComplete: health.setup_complete,
@@ -295,14 +411,16 @@ export const useNodeStore = create<NodeState>((set) => ({
 }));
 ```
 
+**Bootstrap is a single GET /health call.** The AIM Node health endpoint returns `healthy`, `setup_complete`, `locked`, and `csrf_token` atomically. No separate setup status call is needed for bootstrap — the `useSetupStatus` hook (B.2) is for detailed setup state on the setup page, not for initial bootstrap.
+
 ### B.4 allAI Chat Widget Shell
 
 ```typescript
 // src/components/AllAIChat.tsx
 // Collapsible panel, bottom-right corner, fixed position
-// States: collapsed (icon button) / expanded (chat panel)
-// Chat panel: message list + text input + send button
-// Placeholder message: "allAI assistant coming soon"
+// States: collapsed (icon Button) / expanded (chat panel in Card)
+// Chat panel: message list + Input + send Button (brand-indigo primary)
+// Placeholder message: "allAI assistant coming soon" in EmptyState
 // No backend integration — UI shell only
 // Uses brand-indigo for accent, brand-surface for bubble backgrounds
 ```
@@ -310,10 +428,10 @@ export const useNodeStore = create<NodeState>((set) => ({
 ### B.5 Done Criteria — Slice B
 - API client prefixes calls with /api/mgmt, handles CSRF, parses normalized errors
 - React Query hooks for health + setup status with auto-refresh
-- Zustand bootstrap fetches health + setup, populates state atomically
+- Zustand bootstrap fetches single `/health` endpoint, populates state atomically
 - Loading state prevents flicker/misroute on initial render
 - Chat widget opens/closes with smooth animation
-- Tests: 12+ (API client mock tests, error parsing, store bootstrap, chat widget toggle)
+- Tests: 12+ (API client mock tests, error parsing, CSRF extraction, store bootstrap from health, chat widget toggle)
 
 ---
 
@@ -349,6 +467,8 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 # ... existing ENTRYPOINT/CMD unchanged ...
 ```
 
+**Path alignment with MGMT-API-V2 Slice D:** The management app serves static files from `Path(data_dir) / "frontend" / "dist"`. In Docker, `data_dir` resolves to `/app` (the working directory and default data path). The COPY line places built assets at `/app/frontend/dist`, which matches exactly. This alignment is intentional and must be maintained — if `data_dir` default changes, update both specs.
+
 **Key:** Only one new `FROM` stage and one new `COPY` line added. All existing Python builder/runtime logic, user creation (`aimnode`), and entrypoint remain untouched.
 
 ### C.2 .dockerignore Updates
@@ -366,13 +486,14 @@ Update `README.md` or create `docs/DEVELOPMENT.md`:
 - Frontend dev: `cd frontend && npm install && npm run dev`
 - API proxy: Vite proxies /api to :8080
 - Build: `npm run build` outputs to frontend/dist
-- Docker: Multi-stage builds frontend automatically
+- Docker: Multi-stage builds frontend automatically; assets land at `/app/frontend/dist`
 - Brand tokens: How to use brand-* Tailwind classes
+- Base components: Import from `@/components/ui` barrel, variant/size API patterns
 
 ### C.4 Done Criteria — Slice C
 - `docker build` produces image with frontend assets at /app/frontend/dist
 - Docker image size reasonable (< 500MB including Python + Node build cache)
-- README documents dev workflow
+- README documents dev workflow and component library usage
 - CI: frontend build step added (npm ci + npm run build + npm test)
 - Tests: 5+ (Dockerfile build verification, dev server starts, build output structure)
 
@@ -382,25 +503,26 @@ Update `README.md` or create `docs/DEVELOPMENT.md`:
 
 | Slice | Scope | New Files | Tests |
 |-------|-------|-----------|-------|
-| A: Project + Brand + Shell | Vite/React/TS, Tailwind, layout, routes, placeholders | ~25 files in frontend/ | 10 |
+| A: Project + Brand + Shell + Components | Vite/React/TS, Tailwind, layout, routes, placeholders, 9 base components | ~35 files in frontend/ | 15 |
 | B: API Client + State + Chat | Typed fetch wrapper, React Query, Zustand, chat widget | ~10 files | 12 |
 | C: Docker + Docs | Multi-stage Dockerfile, README, CI | 3-4 files | 5 |
-| **Total** | | **~38 files** | **27** |
+| **Total** | | **~48 files** | **32** |
 
 ## Done Criteria (Full BQ)
 
 1. `npm ci && npm run build` produces optimized bundle (Node 20, npm, package-lock.json)
-2. Docker multi-stage build places assets at /app/frontend/dist
-3. App shell: sidebar nav, top bar with status, responsive layout
-4. All 11 routes render placeholder pages
-5. Root redirect: loading → locked → setup → dashboard (three-state)
-6. API client: /api/mgmt prefix, CSRF handling, normalized error parsing
-7. React Query hooks for health + setup with auto-refresh
-8. Zustand store bootstraps atomically, prevents flicker
-9. allAI chat widget shell (UI only, no backend)
-10. Brand system: Primary Indigo, Secondary Teal, Plus Jakarta Sans, 8px radius
-11. Dev mode: `npm run dev` with API proxy to :8080
-12. 27+ tests passing
+2. Docker multi-stage build places assets at /app/frontend/dist (aligned with MGMT-API-V2 data_dir path)
+3. 9 base component primitives: Button, Card, Badge, Input, Field, StatusBadge, PageHeader, Spinner, EmptyState
+4. App shell: sidebar nav, top bar with StatusBadge, responsive layout
+5. All 11 routes render placeholder pages using base components
+6. Root redirect: loading → locked → setup → dashboard (three-state)
+7. API client: /api/mgmt prefix, CSRF handling, normalized error parsing
+8. React Query hooks for health + setup with auto-refresh
+9. Zustand store bootstraps atomically from single `/health` call, prevents flicker
+10. allAI chat widget shell (UI only, no backend)
+11. Brand system: Primary Indigo #3F51B5, Secondary Teal #0F6E56, Plus Jakarta Sans 600/400-500, 8px radius, 1px #E8E8E8 borders
+12. Dev mode: `npm run dev` with API proxy to :8080
+13. 32+ tests passing
 
 ## Out of Scope
 
