@@ -279,13 +279,13 @@ export const useNodeStore = create<NodeState>((set) => ({
   loading: true,
   bootstrap: async () => {
     try {
+      // GET /api/mgmt/health returns: { healthy, setup_complete, locked, csrf_token, session_token }
       const health = await api.get<HealthResponse>('/health');
-      const setup = await api.get<SetupStatusResponse>('/setup/status');
       set({
-        setupComplete: setup.setup_complete,
-        locked: health.locked ?? false,
-        healthStatus: health.status === 'ok' ? 'healthy' : 'degraded',
-        csrfToken: null, // extracted by API client
+        setupComplete: health.setup_complete,
+        locked: health.locked,
+        healthStatus: health.healthy ? 'healthy' : 'degraded',
+        csrfToken: health.csrf_token ?? null, // also extracted from X-CSRF-Token header by ApiClient
         loading: false,
       });
     } catch {
@@ -321,8 +321,10 @@ export const useNodeStore = create<NodeState>((set) => ({
 
 ### C.1 Multi-Stage Dockerfile
 
+**Preserves existing builder + runtime stages.** Adds a new `frontend-build` stage before the existing `runtime` stage.
+
 ```dockerfile
-# Stage 1: Frontend build
+# Stage 1 (NEW): Frontend build
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -330,12 +332,24 @@ RUN npm ci --no-audit --no-fund
 COPY frontend/ .
 RUN npm run build
 
-# Stage 2: Python runtime (existing base)
-FROM python:3.11-slim AS runtime
-# ... existing aim-node Python setup ...
+# Stage 2 (EXISTING): Python builder — unchanged
+FROM python:3.11-slim-bookworm AS builder
+# ... existing pip install, /install output ...
+
+# Stage 3 (EXISTING): Python runtime — add one COPY line
+FROM python:3.11-slim-bookworm AS runtime
+# ... existing apt-get, COPY --from=builder, user creation ...
+
+# ADD THIS LINE after existing COPY --from=builder:
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
-# ... existing CMD ...
+
+# Ensure aimnode user owns frontend assets:
+# RUN chown -R aimnode:aimnode /app  (already exists)
+
+# ... existing ENTRYPOINT/CMD unchanged ...
 ```
+
+**Key:** Only one new `FROM` stage and one new `COPY` line added. All existing Python builder/runtime logic, user creation (`aimnode`), and entrypoint remain untouched.
 
 ### C.2 .dockerignore Updates
 
