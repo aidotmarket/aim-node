@@ -81,6 +81,7 @@ def _make_client(app) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
+        headers={"Origin": "http://localhost"},
     )
 
 
