@@ -1,0 +1,753 @@
+openapi: "3.1.0"
+info:
+  title: ai-market-backend - AIM Node UI Gaps
+  version: "0.1.0"
+  description: >
+    New endpoints required on ai-market-backend to support the aim-node UI facade.
+    These are backend contracts for the marketplace plane, not node-owned management routes.
+    All documented endpoints below require Bearer token auth from aim-node after the API key
+    exchange completes.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token obtained from POST /auth/token and refreshed via POST /auth/refresh.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Used only for the initial token exchange, not by the endpoints in this fragment.
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        request_id:
+          type:
+            - string
+            - "null"
+        retryable:
+          type:
+            - boolean
+            - "null"
+    NodeRecord:
+      type: object
+      required:
+        - node_id
+        - public_key
+        - endpoint_url
+        - status
+      properties:
+        node_id:
+          type: string
+        seller_id:
+          type:
+            - string
+            - "null"
+        public_key:
+          type: string
+        endpoint_url:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum:
+            - active
+            - inactive
+            - pending
+            - disabled
+        registered_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+    NodesResponse:
+      type: object
+      required:
+        - nodes
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeRecord"
+    ToolUpdateRequest:
+      type: object
+      properties:
+        display_name:
+          type:
+            - string
+            - "null"
+        description:
+          type:
+            - string
+            - "null"
+        version:
+          type:
+            - string
+            - "null"
+        visibility:
+          type:
+            - string
+            - "null"
+          enum:
+            - public
+            - private
+            - unlisted
+        price_per_call_cents:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+    ToolRecord:
+      type: object
+      required:
+        - tool_id
+        - tool_name
+        - version
+        - status
+      properties:
+        tool_id:
+          type: string
+        tool_name:
+          type: string
+        display_name:
+          type:
+            - string
+            - "null"
+        description:
+          type:
+            - string
+            - "null"
+        version:
+          type: string
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - archived
+        listing_id:
+          type:
+            - string
+            - "null"
+        visibility:
+          type:
+            - string
+            - "null"
+          enum:
+            - public
+            - private
+            - unlisted
+        price_per_call_cents:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+        updated_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+    ToolsResponse:
+      type: object
+      required:
+        - tools
+      properties:
+        node_id:
+          type:
+            - string
+            - "null"
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolRecord"
+    ToolMutationResponse:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+        tool:
+          $ref: "#/components/schemas/ToolRecord"
+    ToolArchiveResponse:
+      type: object
+      required:
+        - ok
+        - tool_id
+      properties:
+        ok:
+          type: boolean
+        tool_id:
+          type: string
+        archived:
+          type: boolean
+    SessionRecord:
+      type: object
+      required:
+        - session_id
+        - node_id
+        - tool_id
+        - status
+        - started_at
+      properties:
+        session_id:
+          type: string
+        node_id:
+          type: string
+        tool_id:
+          type: string
+        listing_id:
+          type:
+            - string
+            - "null"
+        buyer_node_id:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - pending
+            - active
+            - completed
+            - failed
+            - cancelled
+        duration_ms:
+          type:
+            - integer
+            - "null"
+        gross_amount_usd:
+          type:
+            - number
+            - "null"
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+    SessionsResponse:
+      type: object
+      required:
+        - sessions
+      properties:
+        node_id:
+          type: string
+        range:
+          type: string
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionRecord"
+    SettlementRecord:
+      type: object
+      required:
+        - settlement_id
+        - session_id
+        - node_id
+        - amount_usd
+        - status
+        - settled_at
+      properties:
+        settlement_id:
+          type: string
+        session_id:
+          type: string
+        node_id:
+          type: string
+        amount_usd:
+          type: number
+        fees_usd:
+          type:
+            - number
+            - "null"
+        status:
+          type: string
+          enum:
+            - pending
+            - settled
+            - reversed
+        settled_at:
+          type: string
+          format: date-time
+    SettlementsResponse:
+      type: object
+      required:
+        - settlements
+      properties:
+        node_id:
+          type: string
+        range:
+          type: string
+        settlements:
+          type: array
+          items:
+            $ref: "#/components/schemas/SettlementRecord"
+    PayoutBucket:
+      type: object
+      required:
+        - bucket
+        - gross_amount_usd
+        - net_amount_usd
+      properties:
+        bucket:
+          type: string
+        tool_id:
+          type:
+            - string
+            - "null"
+        gross_amount_usd:
+          type: number
+        net_amount_usd:
+          type: number
+        fees_usd:
+          type:
+            - number
+            - "null"
+        session_count:
+          type:
+            - integer
+            - "null"
+    PayoutSummaryResponse:
+      type: object
+      required:
+        - node_id
+        - group_by
+        - buckets
+      properties:
+        node_id:
+          type: string
+        range:
+          type:
+            - string
+            - "null"
+        group_by:
+          type: string
+          enum:
+            - day
+            - tool
+        total_gross_usd:
+          type:
+            - number
+            - "null"
+        total_net_usd:
+          type:
+            - number
+            - "null"
+        currency:
+          type:
+            - string
+            - "null"
+        buckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/PayoutBucket"
+    TraceRecord:
+      type: object
+      required:
+        - trace_id
+        - node_id
+        - status
+        - started_at
+      properties:
+        trace_id:
+          type: string
+        node_id:
+          type: string
+        session_id:
+          type:
+            - string
+            - "null"
+        tool_id:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - started
+            - completed
+            - failed
+            - timed_out
+        latency_ms:
+          type:
+            - number
+            - "null"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+    TracesResponse:
+      type: object
+      required:
+        - traces
+      properties:
+        node_id:
+          type: string
+        traces:
+          type: array
+          items:
+            $ref: "#/components/schemas/TraceRecord"
+    ListingRecord:
+      type: object
+      required:
+        - listing_id
+        - node_id
+        - tool_id
+        - status
+      properties:
+        listing_id:
+          type: string
+        node_id:
+          type: string
+        tool_id:
+          type: string
+        title:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - archived
+        price_per_call_cents:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+        marketplace_url:
+          type:
+            - string
+            - "null"
+          format: uri
+        created_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+    ListingsResponse:
+      type: object
+      required:
+        - listings
+      properties:
+        listings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ListingRecord"
+  responses:
+    Unauthorized:
+      description: Bearer token is missing, expired, or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Caller is authenticated but lacks permission for the requested node scope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Requested node or tool resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+paths:
+  /aim/nodes/mine:
+    get:
+      summary: Get authenticated seller node registrations
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Node registrations owned by the authenticated seller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /aim/nodes/{id}/tools:
+    get:
+      summary: List published tools for a node
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Backend node_id UUID.
+      responses:
+        "200":
+          description: Published tools associated with the specified node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /aim/nodes/{id}/tools/{tool_id}:
+    put:
+      summary: Update tool metadata
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Backend node_id UUID.
+        - name: tool_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Marketplace tool identifier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolUpdateRequest"
+      responses:
+        "200":
+          description: Updated marketplace tool metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolMutationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Archive a marketplace tool
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Backend node_id UUID.
+        - name: tool_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Marketplace tool identifier.
+      responses:
+        "200":
+          description: Tool archived successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolArchiveResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /aim/sessions:
+    get:
+      summary: Get node-scoped session history
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: node_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Seller node_id used to scope session history.
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            default: 7d
+          description: Relative history window such as 24h, 7d, or 30d.
+      responses:
+        "200":
+          description: Historical marketplace sessions for the specified node and time window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /aim/settlements:
+    get:
+      summary: Get node-scoped settlement records
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: node_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Seller node_id used to scope settlement history.
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            default: 30d
+          description: Relative settlement window such as 30d or 90d.
+      responses:
+        "200":
+          description: Settlement records for the specified node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettlementsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /aim/payouts/summary:
+    get:
+      summary: Get payout rollups for a seller node
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: node_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Seller node_id used to scope payout summary data.
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            default: 7d
+          description: Relative earnings window such as 7d or 30d.
+        - name: group_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - day
+              - tool
+            default: day
+          description: Rollup dimension for returned buckets.
+      responses:
+        "200":
+          description: Aggregated payout rollups for the requested node and period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayoutSummaryResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /aim/observability/traces:
+    get:
+      summary: Get node-scoped trace feed
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: node_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Seller node_id used to scope the trace feed.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 500
+          description: Maximum number of trace summaries to return.
+      responses:
+        "200":
+          description: Recent trace summaries for the specified node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TracesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /listings:
+    get:
+      summary: List marketplace listings with optional node filter
+      description: >
+        Extends the existing listings collection endpoint so the aim-node UI can request
+        listings belonging to a specific originating node using node_id.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: node_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: When present, restrict results to listings created by this node.
+      responses:
+        "200":
+          description: Listings optionally filtered by node_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
