@@ -391,40 +391,54 @@ routes.append(Route("/{path:path}", spa_fallback, methods=["GET"])
 
 New file: `aim_node/management/allai.py`
 
+**Paths per Gate 1 §2.11:** These sit outside `/api/mgmt/marketplace/` because they are local management capabilities with context injection.
+
 | Method | Path | Handler | Description |
 |--------|------|---------|-------------|
-| `POST` | `/api/mgmt/allai/chat` | `allai_chat` | User message → inject local context → forward to backend |
-| `POST` | `/api/mgmt/allai/confirm` | `allai_confirm` | Confirm mutating action proposed by allAI |
+| `POST` | `/allai/chat` | `allai_chat` | User message → inject local context → forward to backend |
+| `POST` | `/allai/confirm` | `allai_confirm` | Confirm/deny mutating action proposed by allAI |
 
-**allai_chat flow (Contracts §6.1):**
-1. Parse user message from request body
-2. Gather local context: node status, active sessions, recent errors, tool inventory
-3. Apply redaction rules: strip API keys, secrets, passphrase references
-4. Build context-enriched payload: `{"message": user_msg, "context": local_context, "node_id": node_id}`
-5. Forward to backend: `POST /allie/chat/agentic` via MarketplaceFacade
-6. Return response to UI
+**allai_chat flow (Contracts §6.1–6.2):**
+1. Parse `AllAIChatRequest(message, conversation_id)`
+2. **Context injection:** Gather local context — `ProcessStateStore.get_status()`, `ProcessStateStore.get_sessions()`, `ProcessStateStore.get_dashboard()`, tool discovery cache (from `{data_dir}/store/discovered_tools.json`)
+3. **Redaction:** Allowlist approach — only include explicitly safe fields. Strip `_passphrase`, API keys, session tokens, CSRF tokens from context
+4. **Tool allowlist (Contracts §6.2):** Include `allowed_tools` from Contracts: `["inspect_local_config", "test_market_auth", "scan_provider_endpoint", "list_local_tools", "tail_recent_logs", "explain_last_failure"]`. Mutable via config.toml `[allai]` section
+5. **Forward:** `POST /allie/chat/agentic` via `MarketplaceFacade.post()` with payload `{message, context, node_id, conversation_id, allowed_tools}`
+6. **Response parsing:** Backend returns `{reply, conversation_id, proposed_actions, suggestions}`. Each `proposed_action` has `{action_id, description, tool_name, params, requires_confirmation}`
+7. **Auto-exec vs confirm:** If `requires_confirmation == false` AND tool in allowlist → execute locally, append result. If `true` → return to UI for approval
+8. **Max loop depth:** 5 rounds of auto-exec before forcing confirmation (Contracts §6.2 safety bound)
+9. **Fallback:** If logs/metrics/tool inventory unavailable, include `degraded_context: true` in payload
 
-**allai_confirm flow (Contracts §6.3):**
-1. Parse confirmation payload: `{"action_id": ..., "approved": bool}`
-2. If approved: forward to backend `POST /allie/actions/confirm`
-3. If denied: forward to backend `POST /allie/actions/deny`
-4. Return result
+**allai_confirm flow (Contracts §6.3 — local execution):**
+1. Parse `AllAIConfirmRequest(action_id, approved)`
+2. If `approved`: Execute proposed action locally (stored in in-memory action cache from chat response). If action targets backend (e.g., publish tool), proxy via `MarketplaceFacade`
+3. If `!approved`: Discard action, return `{status: "denied"}`
+4. No backend round-trip for confirm — actions execute locally. Backend proposed the action; confirmation is a local gate
+
+**Note:** Full NLU, tool routing, agent orchestration are BQ-AIM-NODE-ALLAI-COPILOT scope. This BQ provides transport + context injection + confirmation gate.
 
 ### D.3 Request/Response Schemas
 
 ```python
-# POST /api/mgmt/allai/chat
+# POST /allai/chat
 class AllAIChatRequest(BaseModel):
     message: str
-    conversation_id: str | None = None  # for multi-turn
+    conversation_id: str | None = None
+
+class ProposedAction(BaseModel):
+    action_id: str
+    description: str
+    tool_name: str
+    params: dict
+    requires_confirmation: bool
 
 class AllAIChatResponse(BaseModel):
     reply: str
     conversation_id: str
-    actions: list[dict] | None = None  # proposed mutating actions
+    proposed_actions: list[ProposedAction] | None = None
     suggestions: list[str] | None = None
 
-# POST /api/mgmt/allai/confirm
+# POST /allai/confirm
 class AllAIConfirmRequest(BaseModel):
     action_id: str
     approved: bool
@@ -478,128 +492,108 @@ class AllAIConfirmResponse(BaseModel):
 
 ---
 
-## R2 Amendments (S435, addressing MP R1 findings F1–F4)
+## R3 Amendments (S435, addressing MP R2 findings 1–4)
 
-### Amendment 1: allAI Endpoints — Full Contract Alignment (F1+F2)
+### Amendment: ProcessStateStore Persistence (replaces R2 Amendment 2)
 
-**Path correction:** Endpoints are `POST /allai/chat` and `POST /allai/confirm` (Gate 1 §2.11 paths preserved, NOT under `/api/mgmt/`). These sit outside the `/api/mgmt/marketplace/` prefix because they are local management capabilities with context injection.
-
-**allai_chat expanded flow (Contracts §6.1–6.2):**
-1. Parse `AllAIChatRequest` (message, conversation_id)
-2. **Context injection:** Gather local context — node status, active sessions, recent errors (from metrics), tool inventory (from discovery cache), config summary
-3. **Redaction:** Strip API keys, secrets, passphrase, session tokens from context. Use allowlist approach — only include explicitly safe fields
-4. **Tool allowlist:** Include `allowed_tools` in payload per Contracts §6.2. Default allowlist: `["tool_inventory", "node_status", "session_list", "earnings_summary"]`. Mutable via config
-5. **Forward:** `POST /allie/chat/agentic` via MarketplaceFacade with payload `{message, context, node_id, conversation_id, allowed_tools}`
-6. **Response parsing:** Backend returns `{reply, conversation_id, proposed_actions, suggestions}`. Each `proposed_action` has `{action_id, description, tool_name, params, requires_confirmation}`
-7. **Auto-exec vs confirm:** If `requires_confirmation == false` AND tool is in allowlist → execute locally and append result to reply. If `requires_confirmation == true` → return action to UI for user approval
-8. **Max tool loop depth:** 5 rounds of auto-exec before forcing confirmation (Contracts §6.2 safety bound)
-9. **Fallback:** If logs/metrics/tool inventory are unavailable, include `degraded_context: true` in payload. Backend handles gracefully
-
-**allai_confirm expanded flow (Contracts §6.3):**
-1. Parse `AllAIConfirmRequest(action_id, approved)`
-2. If `approved`: Execute the proposed action locally (action was stored in session state on the chat response). Return execution result
-3. If `!approved`: Discard the action, return `{status: "denied"}`
-4. No backend round-trip for confirm — actions execute locally. The backend already proposed the action; confirmation is a local gate
-5. If the action references a backend endpoint (e.g., publish tool), use MarketplaceFacade to proxy
-
-**Note:** Full NLU, tool routing logic, and agent orchestration are BQ-AIM-NODE-ALLAI-COPILOT scope. This BQ provides the transport layer + context injection + confirmation gate.
-
-### Amendment 2: ProcessStateStore Persistence for Tools + Metrics (F4)
-
-`ProcessStateStore` currently stores typed fields in-memory with JSON serialization to `{data_dir}/state.json`. Extend with generic KV persistence:
+`ProcessStateStore` is a thread-safe singleton that reads `config.toml` for setup state and holds everything else in-memory. It has NO generic persistence to `state.json`. For tools cache and metrics, add a new file-backed KV layer:
 
 ```python
-# New methods on ProcessStateStore
+# New methods on ProcessStateStore (state.py)
+# Use self._data_dir (existing private field)
+
 def get_store_data(self, key: str) -> dict | None:
-    """Read from {data_dir}/store/{key}.json"""
-    path = self.data_dir / "store" / f"{key}.json"
+    """Read from {_data_dir}/store/{key}.json. Returns None if missing."""
+    path = self._data_dir / "store" / f"{key}.json"
     if not path.exists():
         return None
+    import json
     return json.loads(path.read_text())
 
 def set_store_data(self, key: str, data: dict) -> None:
-    """Atomic write to {data_dir}/store/{key}.json"""
-    store_dir = self.data_dir / "store"
+    """Atomic write to {_data_dir}/store/{key}.json via tmp+rename."""
+    import json
+    store_dir = self._data_dir / "store"
     store_dir.mkdir(exist_ok=True)
     tmp = store_dir / f"{key}.json.tmp"
     tmp.write_text(json.dumps(data, default=str))
     tmp.rename(store_dir / f"{key}.json")
+
+def lock_node(self) -> None:
+    """Clear passphrase from memory, set locked state."""
+    with self._state_lock:
+        self._passphrase = None
+        self._locked = True
+        self._unlocked = False
+        self._node_state = NodeState.LOCKED
 ```
 
-**Storage layout:**
-```
-{data_dir}/
-├── state.json           # Existing typed state
-├── store/
-│   ├── discovered_tools.json  # Tool cache (Slice A)
-│   ├── local_metrics.json     # Metrics counters (Slice B)
-│   └── metrics_timeseries.json # 5-min buckets (Slice B)
-```
+Storage layout: `{data_dir}/store/discovered_tools.json`, `local_metrics.json`, `metrics_timeseries.json`. Atomic write via tmp+rename. Single-process (uvicorn single worker), no file locking. Each file includes `_version: 1` for future schema migration.
 
-**Locking:** Single-process (management API runs as one uvicorn worker), so no file locking needed. Atomic write via tmp+rename prevents corruption.
+### Amendment: ProcessManager Extensions (replaces R2 Amendment 3)
 
-**Versioning:** Each store file includes a `_version: 1` field. Future schema changes bump version; reader handles migration.
-
-### Amendment 3: ProcessManager Interface Extensions (F3)
-
-Define exact new methods before using in pseudocode:
+Extends `ProcessManager` (process.py) using actual internals (`_provider_task`, `_state`, `_data_dir`, `_load_raw_config()`):
 
 ```python
-# New methods on ProcessManager (process.py)
+# ProcessManager already has: start_provider(), stop_provider()
+# Uses: _provider_task (asyncio.Task), _state (ProcessStateStore), _data_dir
 
 async def restart_provider(self) -> dict:
-    """Stop then start provider. Returns new health status."""
+    """Stop then start provider. Returns dashboard status."""
     await self.stop_provider()
     await self.start_provider()
-    return await self.get_provider_health()
+    return self._state.get_dashboard()
 
-async def reload_provider_config(self) -> None:
-    """Re-read config, update running provider's config in-place.
-    If provider not running, no-op (config applies on next start)."""
-    raw = read_config(self._data_dir)
-    self._config = load_config(raw)
-    if self._provider_proc is not None:
-        # Signal provider to reload (implementation: write config to shared state,
-        # provider checks on next request cycle — no SIGHUP needed)
-        self._state.set_provider_config(self._config)
+async def reload_config(self) -> None:
+    """Re-read config.toml, update state. If provider running, stop+start."""
+    self._state._load_config()  # Re-read config.toml
+    self._state.determine_node_state()
+    # If provider running, restart to pick up new config
+    if self._state.provider.running:
+        await self.restart_provider()
 
 def is_provider_running(self) -> bool:
-    """Check if provider subprocess is alive."""
-    return self._provider_proc is not None and self._provider_proc.returncode is None
+    return self._state.provider.running
 
 async def kill_session(self, session_id: str) -> bool:
-    """Force-close a specific session. Returns True if found and killed."""
-    # Delegates to SessionHandler.close_session(session_id)
-    # Returns False if session_id not in active sessions
+    """Force-remove session from state. Returns False if not found."""
+    session = self._state.get_session(session_id)
+    if session is None:
+        return False
+    self._state.remove_session(session_id)
+    return True
 ```
 
+### Amendment: DeviceCrypto Rotation (replaces R2 Amendment 3 crypto section)
+
+`DeviceCrypto.__init__(config, passphrase)` + `get_or_create_keypairs()`. No `generate()` classmethod exists. Rotation:
+
 ```python
-# New methods on ProcessStateStore (state.py)
-
-def clear_passphrase(self) -> None:
-    """Securely clear passphrase from memory and persisted state."""
-    self._passphrase = None
-    self._save()  # Writes state.json without passphrase field
-
-def set_locked(self, locked: bool) -> None:
-    """Set node lock state."""
-    self._locked = locked
-    self._save()
-
-@property
-def is_locked(self) -> bool:
-    return self._locked
-```
-
-**keypair_rotate implementation:**
-Uses existing `DeviceCrypto` class but adds a `rotate()` classmethod:
-```python
-# In aim_node/core/crypto.py
-@classmethod
-def rotate(cls, data_dir: Path) -> "DeviceCrypto":
-    """Generate new keypair, overwrite existing keystore."""
+# In aim_node/management/routes.py — keypair_rotate handler
+async def keypair_rotate(request: Request) -> JSONResponse:
+    store = request.app.state.store
+    data_dir = store._data_dir
     keystore_path = data_dir / "keystore.json"
+    
+    # Backup existing keystore
     if keystore_path.exists():
         keystore_path.rename(data_dir / "keystore.json.bak")
-    return cls.generate(data_dir)
+    
+    # Generate new keypair using existing DeviceCrypto interface
+    passphrase = store.get_passphrase() or ""
+    config = type("C", (), {"keystore_path": keystore_path, "data_dir": data_dir})()
+    crypto = DeviceCrypto(config, passphrase=passphrase)
+    crypto.get_or_create_keypairs()
+    
+    # Re-register with backend via facade
+    facade = request.app.state.facade
+    if facade:
+        pub_keys = crypto.get_public_keys_b64()
+        await facade.post("/aim/nodes/keypair", {"public_key": pub_keys[0]})
+    
+    return JSONResponse({"status": "rotated"})
 ```
+
+### Amendment: allAI Tool Allowlist (Contracts §6.2 aligned)
+
+Default allowlist from Contracts §6.2: `["inspect_local_config", "test_market_auth", "scan_provider_endpoint", "list_local_tools", "tail_recent_logs", "explain_last_failure"]`. Plus generative tools: `["draft_tool_description", "suggest_pricing"]`. Plus mutating tools (always require confirmation): `["publish_tool", "update_config", "rotate_keypair"]`.
