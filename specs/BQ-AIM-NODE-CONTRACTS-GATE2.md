@@ -492,7 +492,6 @@ def serve(data_dir: str, host: str, port: int) -> None:
 2. First request from a loopback address (127.0.0.1, localhost, ::1) triggers token generation:
    - `app.state.session_token = secrets.token_hex(32)`
    - Token returned in response body (`session_token` field) AND `Set-Cookie: aim_session=<token>; HttpOnly; SameSite=Strict; Path=/`
-   - Token also printed to stderr as fallback for CLI/curl users
 3. Subsequent requests from any origin must include the token via `X-Session-Token` header or `aim_session` cookie.
 4. Token is ephemeral — lost on process restart.
 
@@ -508,8 +507,7 @@ if getattr(request.app.state, "remote_bind", False):
             import secrets, sys
             token = secrets.token_hex(32)
             request.app.state.session_token = token
-            print(f"Session token issued: {token}", file=sys.stderr)
-            # Token will be injected in response below
+            # Token delivered via Set-Cookie + response body on this request
         else:
             # Non-loopback request before any loopback has issued a token
             err = make_error(ErrorCode.AUTH_FAILED,
@@ -1335,7 +1333,7 @@ ai-market-backend directly.
 
 **Remote access** (`--host 0.0.0.0`):
 - Session token issued on first request from localhost (Gate 1 M1)
-- Token delivered via `Set-Cookie: aim_session` and in response body; also printed to stderr as fallback
+- Token delivered via `Set-Cookie: aim_session` and in response body
 - Subsequent requests from any origin must include `X-Session-Token` header or `aim_session` cookie
 
 ### Node → Backend (Marketplace Plane)
