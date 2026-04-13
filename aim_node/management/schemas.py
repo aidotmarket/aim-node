@@ -86,6 +86,8 @@ class HealthResponse(BaseModel):
     healthy: bool = True
     setup_complete: bool
     locked: bool
+    csrf_token: Optional[str] = None
+    session_token: Optional[str] = None
 
 
 class SetupStatusResponse(BaseModel):

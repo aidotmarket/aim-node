@@ -183,7 +183,11 @@ def init(passphrase: str) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default="/data")
-@click.option("--host", default="0.0.0.0")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Bind host. Use 0.0.0.0 only with explicit intent - requires session token.",
+)
 @click.option("--port", type=int, default=8401)
 def serve(data_dir: str, host: str, port: int) -> None:
     """Start the AIM Node management HTTP server."""
@@ -191,7 +195,15 @@ def serve(data_dir: str, host: str, port: int) -> None:
 
     from aim_node.management.app import create_management_app
 
-    app = create_management_app(Path(data_dir))
+    remote_bind = host not in ("127.0.0.1", "localhost", "::1")
+    if remote_bind:
+        click.echo(
+            f"WARNING: Binding to {host}. Remote access enabled.\n"
+            "Session token will be issued on first localhost access.",
+            err=True,
+        )
+
+    app = create_management_app(Path(data_dir), remote_bind=remote_bind)
     uvicorn.run(app, host=host, port=port)
 
 

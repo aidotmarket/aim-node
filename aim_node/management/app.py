@@ -19,6 +19,7 @@ from aim_node.management.errors import (
     HTTP_STATUS_TO_CODE,
     make_error,
 )
+from aim_node.management.middleware import CSRFMiddleware
 from aim_node.management.process import (
     AlreadyRunningError,
     ConfigError,
@@ -150,7 +151,11 @@ async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
 
 
-def create_management_app(data_dir: Path) -> Starlette:
+def create_management_app(
+    data_dir: Path,
+    *,
+    remote_bind: bool = False,
+) -> Starlette:
     """Create the management Starlette application.
 
     Lifespan creates a fresh ProcessStateStore and ProcessManager bound to the
@@ -166,6 +171,8 @@ def create_management_app(data_dir: Path) -> Starlette:
         process_mgr = ProcessManager(state, data_dir)
         app.state.store = state
         app.state.process_mgr = process_mgr
+        app.state.remote_bind = remote_bind
+        app.state.session_token = None
         try:
             yield
         finally:
@@ -199,4 +206,7 @@ def create_management_app(data_dir: Path) -> Starlette:
         lifespan=lifespan,
         exception_handlers=exception_handlers,
     )
+    app.state.remote_bind = remote_bind
+    app.state.session_token = None
+    app.add_middleware(CSRFMiddleware)
     return app

@@ -82,13 +82,20 @@ async def _parse_body(request: Request, model: Type[T]) -> T:
 async def health(request: Request) -> JSONResponse:
     state = request.app.state.store
     status = state.get_status()
-    return JSONResponse(
+    csrf_token = getattr(request.app.state, "csrf_token", None)
+    session_token = getattr(request.state, "session_token_issued", None)
+    response = JSONResponse(
         HealthResponse(
             healthy=True,
             setup_complete=status["setup_complete"],
             locked=status["locked"],
+            csrf_token=csrf_token,
+            session_token=session_token,
         ).model_dump()
     )
+    if csrf_token:
+        response.headers["X-CSRF-Token"] = csrf_token
+    return response
 
 
 # ---------- Setup ----------

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 
@@ -123,3 +124,29 @@ output_path = "$.result"
     assert adapter_config.input_path == "$.payload"
     assert adapter_config.wrap_key == "input"
     assert adapter_config.output_path == "$.result"
+
+
+def test_serve_default_host_is_loopback(monkeypatch, tmp_path: Path) -> None:
+    runner = CliRunner()
+    seen: dict[str, object] = {}
+
+    def fake_create_management_app(data_dir: Path, *, remote_bind: bool = False):
+        seen["data_dir"] = data_dir
+        seen["remote_bind"] = remote_bind
+        return SimpleNamespace()
+
+    def fake_run(app, *, host: str, port: int):
+        seen["app"] = app
+        seen["host"] = host
+        seen["port"] = port
+
+    monkeypatch.setattr("aim_node.management.app.create_management_app", fake_create_management_app)
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    result = runner.invoke(main, ["serve", "--data-dir", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert seen["data_dir"] == tmp_path
+    assert seen["remote_bind"] is False
+    assert seen["host"] == "127.0.0.1"
+    assert seen["port"] == 8401
