@@ -5,7 +5,7 @@
 **Epic:** AIM-NODE-UI
 **Phase:** 2 — Implementation
 **Prerequisite:** Gate 1 approved (S432), BQ-AIM-NODE-CONTRACTS Gate 4 complete
-**Author:** Vulcan (S435)
+**Author:** Vulcan (S435, R5 S436)
 
 ---
 
@@ -42,6 +42,10 @@ aim_node/
 │   ├── market_client.py — MarketClient (HTTP to api.ai.market)
 │   ├── auth.py         — AuthService (API key → Bearer token exchange)
 │   └── ...
+├── consumer/
+│   └── session_manager.py — SessionManager (buyer-side session lifecycle)
+├── provider/
+│   └── session_handler.py — ProviderSessionHandler (provider-side relay sessions)
 ├── cli.py              — Click CLI (serve, consumer commands)
 └── ...
 ```
@@ -52,6 +56,7 @@ aim_node/
 - State: `request.app.state.store` (ProcessStateStore), `request.app.state.process_mgr` (ProcessManager)
 - Config: `read_config(data_dir)` returns raw dict; `load_config(raw)` → AIMCoreConfig
 - Tests: `httpx.AsyncClient(app=app)` pattern, fixtures in `tests/conftest.py`
+- `MarketplaceFacade.post()` signature: `async def post(self, path, *, json_body=None, cache_ttl_s=None)` — `json_body` is keyword-only
 
 ---
 
@@ -59,11 +64,11 @@ aim_node/
 
 ### A.1 New File: `aim_node/management/tools.py`
 
-Tool discovery service + handlers. Scans the upstream MCP endpoint configured in `AIMCoreConfig.upstream_url`, discovers tool schemas via MCP protocol, and caches results in `ProcessStateStore`.
+Tool discovery service + handlers. Scans the upstream MCP endpoint configured in `AIMCoreConfig.upstream_url`, discovers tool schemas via MCP protocol, and caches results using file-backed store under `{data_dir}/store/`.
 
 ```python
-# Storage key in ProcessStateStore
-TOOLS_CACHE_KEY = "discovered_tools"
+# Storage key for file-backed store
+TOOLS_STORE_KEY = "discovered_tools"
 
 class DiscoveredTool:
     """Cached tool schema from upstream scan."""
@@ -77,21 +82,21 @@ class DiscoveredTool:
     last_validated_at: str | None
     validation_status: str  # "pending" | "passed" | "failed"
 
-async def scan_upstream(config: AIMCoreConfig, store: ProcessStateStore) -> list[dict]:
+async def scan_upstream(config: AIMCoreConfig, data_dir: Path) -> list[dict]:
     """Connect to upstream MCP endpoint, list tools, cache schemas."""
     # 1. HTTP GET {upstream_url}/tools/list (or MCP protocol equivalent)
     # 2. Parse tool schemas from response
     # 3. Generate tool_id = hashlib.sha256(f"{name}:{version}").hexdigest()[:12]
-    # 4. Store in ProcessStateStore under TOOLS_CACHE_KEY
+    # 4. Store via write_store(data_dir, TOOLS_STORE_KEY, ...)
     # 5. Return list of DiscoveredTool dicts
 
-async def validate_tool(tool_id: str, config: AIMCoreConfig, store: ProcessStateStore) -> dict:
+async def validate_tool(tool_id: str, config: AIMCoreConfig, data_dir: Path) -> dict:
     """Run sample invocation against upstream, verify response matches schema."""
-    # 1. Load tool from cache
+    # 1. Load tool from read_store(data_dir, TOOLS_STORE_KEY)
     # 2. Build sample input from input_schema (generate minimal valid payload)
     # 3. POST to upstream endpoint
     # 4. Validate response against output_schema
-    # 5. Update validation_status + last_validated_at in cache
+    # 5. Update validation_status + last_validated_at via write_store()
     # 6. Return validation result
 ```
 
@@ -212,14 +217,19 @@ class LogEntry(TypedDict):
 
 ### B.3 New File: `aim_node/management/metrics.py`
 
-Local counters maintained by the management app. Uses `ProcessStateStore` for persistence across restarts.
+Local counters maintained by the management app. Uses file-backed store under `{data_dir}/store/` for persistence across restarts (see Persistence Note).
 
 ```python
-METRICS_KEY = "local_metrics"
+METRICS_STORE_KEY = "local_metrics"
+TIMESERIES_STORE_KEY = "metrics_timeseries"
 
 class MetricsCollector:
-    """Tracks local counters: calls, errors, active sessions, latency."""
-    # Incremented by provider/consumer event hooks
+    """Tracks local counters: calls, errors, active sessions, latency.
+    
+    Persistence: read_store/write_store with data_dir, not ProcessStateStore.
+    On init, load counters from {data_dir}/store/local_metrics.json.
+    Periodic flush (every 60s or on shutdown) writes current counters back.
+    """
     total_calls: int = 0
     total_errors: int = 0
     active_sessions: int = 0
@@ -261,16 +271,26 @@ Extend existing routes file with:
 |--------|------|---------|-------------|
 | `POST` | `/api/mgmt/provider/restart` | `provider_restart` | Stop + start provider, return new dashboard |
 | `POST` | `/api/mgmt/provider/reload` | `provider_reload` | Re-read config.toml, restart provider if running |
-| `POST` | `/api/mgmt/lock` | `lock_node` | Clear passphrase, stop provider, set locked state |
+| `POST` | `/api/mgmt/lock` | `lock_node` | Clear passphrase from memory + env, stop provider + consumer, set locked state |
 | `POST` | `/api/mgmt/keypair/rotate` | `keypair_rotate` | Generate new keypair, re-register with backend |
-| `DELETE` | `/api/mgmt/sessions/{session_id}` | `session_kill` | Force-close a stuck session |
+| `DELETE` | `/api/mgmt/sessions/{session_id}` | `session_kill` | Force-close a stuck session (real close + snapshot removal) |
 
 ### C.2 Implementation Notes (using actual codebase interfaces)
 
 **Actual interfaces available:**
-- `request.app.state.process_mgr` → `ProcessManager` (has `start_provider()`, `stop_provider()`, `_state`, `_data_dir`, `_load_raw_config()`)
+- `request.app.state.process_mgr` → `ProcessManager` (has `start_provider()`, `stop_provider()`, `start_consumer()`, `stop_consumer()`, `_state`, `_data_dir`, `_load_raw_config()`)
 - `request.app.state.store` → `ProcessStateStore` (has `_data_dir`, `_passphrase`, `_locked`, `_unlocked`, `_node_state`, `provider.running`, `get_status()`, `get_dashboard()`, `get_session()`, `remove_session()`, `get_passphrase()`, `determine_node_state()`, `_load_config()`, `_state_lock`)
+- `request.app.state.session_mgr` → `SessionManager` (consumer side; has `close_session(session_id)` — pops from `_sessions`, cancels keepalive task, calls `market_client.close_session()`, closes transport)
+- `request.app.state.provider_handler` → `ProviderSessionHandler` (provider side; has `_active_sessions: dict[str, RelayTransport]`, `_session_tasks: dict[str, asyncio.Task]`; no per-session close method — cleanup by cancelling task + closing transport directly)
 - `DeviceCrypto(config, passphrase)` + `get_or_create_keypairs()` + `get_public_keys_b64()`
+- `MarketplaceFacade.post()` signature: `async def post(self, path, *, json_body=None, cache_ttl_s=None)` — keyword-only `json_body`
+
+**app.state exposure requirement (set in app factory):**
+```python
+# In app.py create_app(), after ProcessManager init:
+app.state.session_mgr = session_mgr       # SessionManager instance (consumer)
+app.state.provider_handler = provider_handler  # ProviderSessionHandler instance
+```
 
 **provider_restart:**
 ```python
@@ -287,13 +307,13 @@ async def provider_reload(request):
     store = request.app.state.store
     store._load_config()  # Re-read config.toml
     store.determine_node_state()
-    # Update facade with new config
+    # Update facade with new config — set to None on failure (matches app.py:246-254 startup pattern)
     from aim_node.management.config_writer import read_config
     raw = read_config(store._data_dir)
     try:
         request.app.state.facade = MarketplaceFacade.create(_load_core_config(raw))
     except Exception:
-        pass  # Facade update optional
+        request.app.state.facade = None  # Clear stale facade so callers see None, not a broken client
     # Restart provider if running to pick up new config
     pm = request.app.state.process_mgr
     if store.provider.running:
@@ -304,13 +324,20 @@ async def provider_reload(request):
 
 **lock_node:**
 ```python
+import os
+
 async def lock_node(request):
     store = request.app.state.store
     pm = request.app.state.process_mgr
     # Stop provider if running
     if store.provider.running:
         await pm.stop_provider()
-    # Clear passphrase and set locked state
+    # Stop consumer if running (prevents new session negotiation while locked)
+    if hasattr(store, 'consumer') and getattr(store.consumer, 'running', False):
+        await pm.stop_consumer()
+    # Clear passphrase from env to prevent leakage via child processes or DeviceCrypto
+    os.environ.pop("AIM_KEYSTORE_PASSPHRASE", None)
+    # Clear passphrase from memory and set locked state
     with store._state_lock:
         store._passphrase = None
         store._locked = True
@@ -334,36 +361,67 @@ async def keypair_rotate(request):
     crypto = DeviceCrypto(config, passphrase=passphrase)
     crypto.get_or_create_keypairs()
     pub_keys = crypto.get_public_keys_b64()
-    # Re-register with backend via facade
+    # Re-register with backend via facade (keyword-only json_body per facade.py:71-77)
     facade = request.app.state.facade
     if facade:
-        await facade.post("/aim/nodes/keypair", {"public_key": pub_keys[0]})
+        await facade.post("/aim/nodes/keypair", json_body={"public_key": pub_keys[0]})
     return JSONResponse({"status": "rotated"})
 ```
 
 **session_kill:**
 ```python
+from contextlib import suppress
+
 async def session_kill(request):
     session_id = request.path_params["session_id"]
     store = request.app.state.store
     session = store.get_session(session_id)
     if session is None:
         raise HTTPException(404, f"Session {session_id} not found")
+
+    # 1. Close real consumer-side session via SessionManager
+    #    SessionManager.close_session() pops from _sessions, cancels keepalive,
+    #    calls market_client.close_session(), closes relay transport
+    session_mgr = getattr(request.app.state, 'session_mgr', None)
+    if session_mgr is not None:
+        try:
+            await session_mgr.close_session(session_id)
+        except Exception:
+            pass  # Session may not exist in SessionManager (already expired)
+
+    # 2. Close real provider-side session via ProviderSessionHandler
+    #    No per-session close method — cancel task + close transport directly
+    #    (mirrors ProviderSessionHandler.stop() cleanup pattern)
+    provider_handler = getattr(request.app.state, 'provider_handler', None)
+    if provider_handler is not None:
+        task = provider_handler._session_tasks.pop(session_id, None)
+        transport = provider_handler._active_sessions.pop(session_id, None)
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if transport is not None:
+            with suppress(Exception):
+                await transport.close(reason="admin_kill")
+
+    # 3. Remove from state store snapshot
     store.remove_session(session_id)
     return JSONResponse({"status": "killed", "session_id": session_id})
 ```
 
-### C.3 No ProcessManager Extensions Needed
+### C.3 app.state Exposure Requirement
 
-All 5 handlers use existing `ProcessManager` and `ProcessStateStore` APIs directly. No new methods required on these classes. The lock handler manipulates state fields directly under `_state_lock` (same pattern as `unlock()` in state.py).
+The app factory (`app.py`) must expose `session_mgr` (SessionManager) and `provider_handler` (ProviderSessionHandler) on `app.state` so that `session_kill` and future admin endpoints can reach the real session lifecycle objects. This is a wiring change in `create_app()` — no new classes or methods needed on ProcessManager, SessionManager, or ProviderSessionHandler.
+
+All 5 handlers use existing APIs on ProcessManager, ProcessStateStore, SessionManager, and ProviderSessionHandler directly.
 
 ### C.4 Done Criteria — Slice C
 - Restart stops + starts provider, returns new health
-- Reload re-reads config, updates facade, signals provider
-- Lock stops provider, clears passphrase, sets locked state
-- Keypair rotate generates new key, re-registers with backend
-- Session kill force-closes stuck session
-- Tests: 12+ (restart cycle, reload config, lock then unlock, rotate + verify fingerprint, kill valid/invalid session)
+- Reload re-reads config, updates facade (sets None on failure), signals provider
+- Lock stops provider + consumer, clears passphrase from memory AND env, sets locked state
+- Keypair rotate generates new key, re-registers with backend via `facade.post(..., json_body=...)`
+- Session kill force-closes real sessions (consumer via SessionManager.close_session, provider via task cancel + transport close) then removes state snapshot
+- Tests: 12+ (restart cycle, reload config, reload with bad config → facade=None, lock then unlock, rotate + verify fingerprint, kill valid session consumer-side, kill valid session provider-side, kill invalid session → 404)
 
 ---
 
@@ -416,10 +474,10 @@ New file: `aim_node/management/allai.py`
 
 **allai_chat flow (Contracts §6.1–6.2):**
 1. Parse `AllAIChatRequest(message, conversation_id)`
-2. **Context injection:** Gather local context — `ProcessStateStore.get_status()`, `ProcessStateStore.get_sessions()`, `ProcessStateStore.get_dashboard()`, tool discovery cache (from `{data_dir}/store/discovered_tools.json`)
+2. **Context injection:** Gather local context — `ProcessStateStore.get_status()`, `ProcessStateStore.get_sessions()`, `ProcessStateStore.get_dashboard()`, tool discovery cache (from `{data_dir}/store/discovered_tools.json` via `read_store()`)
 3. **Redaction:** Allowlist approach — only include explicitly safe fields. Strip `_passphrase`, API keys, session tokens, CSRF tokens from context
 4. **Tool allowlist (Contracts §6.2):** Include `allowed_tools` from Contracts: `["inspect_local_config", "test_market_auth", "scan_provider_endpoint", "list_local_tools", "tail_recent_logs", "explain_last_failure"]`. Mutable via config.toml `[allai]` section
-5. **Forward:** `POST /allie/chat/agentic` via `MarketplaceFacade.post()` with payload `{message, context, node_id, conversation_id, allowed_tools}`
+5. **Forward:** `POST /allie/chat/agentic` via `MarketplaceFacade.post()` with payload `{message, context, node_id, conversation_id, allowed_tools}` — use `json_body=` keyword arg
 6. **Response parsing:** Backend returns `{reply, conversation_id, proposed_actions, suggestions}`. Each `proposed_action` has `{action_id, description, tool_name, params, requires_confirmation}`
 7. **Auto-exec vs confirm:** If `requires_confirmation == false` AND tool in allowlist → execute locally, append result. If `true` → return to UI for approval
 8. **Max loop depth:** 5 rounds of auto-exec before forcing confirmation (Contracts §6.2 safety bound)
@@ -480,7 +538,7 @@ class AllAIConfirmResponse(BaseModel):
 |-------|-----------|-----------|-------|
 | A: Tool Discovery + Test-Upstream | 5 | `management/tools.py` | 15 |
 | B: Logs + Metrics | 4 (+ 1 WS) | `management/logs.py`, `management/metrics.py` | 18 |
-| C: Provider Lifecycle + Security Ops + Session Kill | 5 | Extensions to `routes.py`, `process.py` | 12 |
+| C: Provider Lifecycle + Security Ops + Session Kill | 5 | Extensions to `routes.py`, wiring in `app.py` | 12 |
 | D: Static Files + SPA + allAI | 2 (+ SPA fallback) | `management/allai.py`, updates to `app.py` | 12 |
 | **Total** | **16 + 1 WS + SPA** | | **57** |
 
@@ -490,7 +548,7 @@ class AllAIConfirmResponse(BaseModel):
 2. Local tool discovery scans upstream, caches schemas, validates tools
 3. Log tail and real-time WebSocket stream functional with security
 4. Provider restart/reload, node lock, keypair rotation all work
-5. Session kill force-closes stuck sessions
+5. Session kill force-closes real sessions (consumer + provider side) then removes snapshot
 6. Static files + SPA fallback with correct cache headers
 7. allAI chat injects local context with redaction, confirm round-trip works
 8. All existing 31 routes still functional (no regressions)
@@ -508,11 +566,9 @@ class AllAIConfirmResponse(BaseModel):
 
 ---
 
----
-
 ## Persistence Note (applies to Slices A + B)
 
-`ProcessStateStore` is an in-memory singleton that reads `config.toml` for setup state. It has NO generic KV persistence. For tool cache and metrics that need to survive restarts, use file-based storage under `{_data_dir}/store/`:
+`ProcessStateStore` is an in-memory singleton that reads `config.toml` for setup state. It has NO generic KV persistence. For tool cache and metrics that need to survive restarts, use file-based storage under `{data_dir}/store/`:
 
 ```python
 # Utility functions used by Slices A + B (add to state.py or a new utils module)
