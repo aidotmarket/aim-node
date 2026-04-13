@@ -34,6 +34,7 @@ The AIM Node has 17 management endpoints covering setup, dashboard, config, prov
 - Add `OriginValidationMiddleware` to Starlette app: validate `Origin` header on POST/PUT/DELETE
 - Issue CSRF token via `GET /api/mgmt/health` response (new `csrf_token` field)
 - Validate `X-CSRF-Token` header on all mutating requests
+- **Remote-bind session token:** If `--host 0.0.0.0` is enabled, all management API requests MUST also present `X-Session-Token` header. The session token is issued on first localhost access, stored in browser `sessionStorage`, and validated on every subsequent request. Requests without a valid session token are rejected 403. (Contracts M1 §3.1 requirement 3)
 
 ### 2.2 Error Normalization (Contracts M5)
 
@@ -57,6 +58,11 @@ The AIM Node has 17 management endpoints covering setup, dashboard, config, prov
 |--------|------|---------|
 | `GET` | `/api/mgmt/logs` | Tail recent log entries (query: `level`, `limit`, `since`) |
 | `WS` | `/api/mgmt/logs/stream` | Real-time log stream via WebSocket |
+
+**WebSocket Security (`/api/mgmt/logs/stream`):**
+- On upgrade request: validate `Origin` header matches `http://localhost:*` or `http://127.0.0.1:*` (same policy as management CORS)
+- If remote-bind (`--host 0.0.0.0`) is enabled: require `session_token` query parameter on the upgrade request URL (WebSocket upgrade cannot attach custom headers in all browsers)
+- Connections from non-loopback origins without a valid session token are rejected 403 before the upgrade is accepted
 
 ### 2.5 Local Metrics
 
@@ -93,7 +99,7 @@ The AIM Node has 17 management endpoints covering setup, dashboard, config, prov
 
 ### 2.10 Marketplace Facade (Contracts Section 4.1)
 
-All under `/api/mgmt/marketplace/*` — proxy to backend with node JWT auth:
+All under `/api/mgmt/marketplace/*` — proxy to backend with Bearer token auth (API-key exchange → `access_token`, per Contracts Section 3.2):
 
 | Method | Path | Proxies To |
 |--------|------|-----------|
@@ -111,14 +117,39 @@ All under `/api/mgmt/marketplace/*` — proxy to backend with node JWT auth:
 | `GET` | `/marketplace/traces` | `GET /aim/observability/traces?node_id={id}` |
 | `GET` | `/marketplace/listings` | `GET /listings?node_id={id}` |
 | `GET` | `/marketplace/discover` | `POST /aim/discover/search` |
-| `POST` | `/marketplace/allai` | `POST /allie/chat/agentic` (with context injection per Contracts Section 6) |
 
-### 2.11 Static File Serving
+**Discover endpoint query-to-body mapping:** `GET /marketplace/discover` translates query parameters to the `POST /aim/discover/search` request body:
 
-The existing `Mount("/static", ...)` placeholder in `app.py` must be updated:
-- Serve the React SPA build output from a `frontend/dist/` directory inside the Docker image
-- Add SPA fallback: any non-API, non-static request returns `index.html` (client-side routing)
-- Cache headers: `Cache-Control: public, max-age=31536000` for hashed assets, `no-cache` for `index.html`
+| Query Param | POST Body Field | Notes |
+|-------------|----------------|-------|
+| `q` | `query` | Free-text search string |
+| `category` | `category` | Tool category filter |
+| `tags` | `tags` | Comma-separated string → array |
+| `limit` | `limit` | Max results (default 20, max 100) |
+| `offset` | `offset` | Pagination offset |
+| `sort_by` | `sort_by` | `relevance` \| `popularity` \| `created_at` |
+
+All query params are optional. Omitting all params produces an unfiltered browse (empty POST body).
+
+### 2.11 allAI Local Endpoints
+
+Local capabilities, not marketplace proxies. These handle the allAI chat round-trip with context injection before forwarding to the backend, and the confirmation round-trip for mutating actions.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/allai/chat` | Submit a user message; node injects local context per redaction rules (Contracts §6.1), forwards to backend `POST /allie/chat/agentic` |
+| `POST` | `/allai/confirm` | Confirm a mutating action proposed by allAI (Contracts §6.3 confirmation contract) |
+
+These endpoints are outside `/api/mgmt/marketplace/*` because they are local management capabilities, not marketplace data proxies.
+
+### 2.12 Static File Serving
+
+This BQ owns Starlette static file serving. The React SPA build artifacts are produced by BQ-AIM-NODE-UI-SCAFFOLD (which owns the Docker multi-stage build, Node 20 LTS) and placed at `frontend/dist/` in the Python runtime image.
+
+This BQ implements:
+- Update the existing `Mount("/static", ...)` placeholder in `app.py` to serve from `frontend/dist/`
+- SPA fallback: any non-API, non-static path returns `index.html` (enables client-side routing)
+- Cache headers: `Cache-Control: public, max-age=31536000` for fingerprinted/hashed assets; `no-cache` for `index.html`
 
 ## 3. Build Slices
 
@@ -126,8 +157,8 @@ The existing `Mount("/static", ...)` placeholder in `app.py` must be updated:
 **Slice B:** Local tools (discover, validate, list, detail) + setup test-upstream
 **Slice C:** Logs (tail + WebSocket stream) + local metrics (summary + timeseries)
 **Slice D:** Provider lifecycle (restart, reload) + security ops (lock, rotate) + session kill
-**Slice E:** Marketplace facade (15 proxy endpoints with caching per Contracts Section 4.2)
-**Slice F:** Static file serving + SPA fallback + allAI proxy with context injection
+**Slice E:** Marketplace facade (14 proxy endpoints with caching per Contracts Section 4.2)
+**Slice F:** Static file serving + SPA fallback (§2.12) + allAI local endpoints (`POST /allai/chat`, `POST /allai/confirm`) with context injection per Contracts Section 6
 
 ## 4. Done Criteria
 
@@ -135,8 +166,8 @@ The existing `Mount("/static", ...)` placeholder in `app.py` must be updated:
 - All error responses follow normalized format (19 codes from Contracts)
 - Local tool discovery scans upstream MCP endpoint and caches schemas
 - Log tail and WebSocket stream functional
-- All 15 marketplace facade endpoints proxy correctly with JWT auth
-- allAI proxy injects local context per redaction rules (Contracts Section 6.1)
+- All 14 marketplace facade endpoints proxy correctly with Bearer token auth
+- allAI chat (`POST /allai/chat`) injects local context per redaction rules (Contracts §6.1); confirmation round-trip (`POST /allai/confirm`) executes approved mutating actions
 - SPA fallback serves index.html for client routes
 - All existing 17 endpoints still functional (no regressions)
 

@@ -74,7 +74,7 @@ Tailwind config extends with these as `brand-*` color tokens.
 
 | Route | Screen | Status |
 |-------|--------|--------|
-| `/` | Redirect → `/dashboard` or `/setup` (based on setup_complete) | Scaffold |
+| `/` | Redirect (three states): `locked` → `/setup/unlock`; `!setupComplete` → `/setup`; otherwise → `/dashboard` | Scaffold |
 | `/setup` | Setup Wizard | Future BQ |
 | `/setup/unlock` | Unlock Screen | Future BQ |
 | `/dashboard` | Provider Dashboard | Future BQ |
@@ -86,7 +86,7 @@ Tailwind config extends with these as `brand-*` color tokens.
 | `/logs` | Log Viewer | Future BQ |
 | `/settings` | Configuration | Future BQ |
 
-Scaffold BQ implements: route definitions, layout shell, placeholder pages with "Coming Soon" for each route, and the root redirect logic.
+Scaffold BQ implements: route definitions, layout shell, placeholder pages with "Coming Soon" for each route, and the root redirect logic (three-state: locked / !setupComplete / ready).
 
 ### 4.3 API Client
 
@@ -94,7 +94,7 @@ Typed wrapper around fetch that:
 - Prefixes all calls with `/api/mgmt`
 - Reads CSRF token from health response, attaches to mutating requests
 - Handles error responses per normalized format (Contracts Section 5)
-- Provides React Query hooks: `useHealth()`, `useSetupStatus()`, `useDashboard()`, etc.
+- Provides React Query hooks scoped to stable/already-approved management endpoints: `useHealth()`, `useSetupStatus()`. Each hook is a thin wrapper over a provisional MGMT-API-V2 contract. Hooks for unimplemented endpoints are added when the corresponding endpoint is approved — not speculatively.
 - Auto-refreshes on focus/interval for real-time data
 
 ### 4.4 Global State (Zustand)
@@ -103,10 +103,13 @@ Typed wrapper around fetch that:
 interface NodeState {
   setupComplete: boolean;
   locked: boolean;
+  healthStatus: 'healthy' | 'degraded' | 'unknown';
   csrfToken: string | null;
-  // Set on initial health check
+  loading: boolean; // true during initial bootstrap fetch — prevents flicker/misroute
 }
 ```
+
+On app mount, the store fetches `GET /api/mgmt/health` and populates all five fields atomically before rendering routes. The root redirect reads `loading` first: while `true`, render a neutral loading state (no redirect). Once `false`, apply the three-state redirect logic.
 
 ### 4.5 allAI Chat Widget Shell
 
@@ -121,10 +124,17 @@ A collapsible chat panel in the bottom-right corner. Scaffold provides:
 
 ### 5.1 Build Pipeline
 
-The Dockerfile gets a multi-stage build:
+This BQ owns the Docker multi-stage build. The Starlette static mount, SPA fallback routing, and cache headers are owned by BQ-AIM-NODE-MGMT-API-V2 (§2.12).
+
 ```
-Stage 1: Node.js — npm install, npm run build (outputs to dist/)
-Stage 2: Python — existing aim-node install, COPY dist/ into frontend/dist/
+Stage 1: node:20-alpine (Node 20 LTS)
+  - Package manager: npm (lockfile: package-lock.json required; npm ci for reproducible installs)
+  - RUN npm ci && npm run build
+  - Build artifacts output to: /app/frontend/dist
+
+Stage 2: Python runtime (existing aim-node image)
+  - COPY --from=0 /app/frontend/dist /app/frontend/dist
+  - No Starlette or cache config here — that lives in app.py (MGMT-API-V2)
 ```
 
 ### 5.2 Development Mode
@@ -145,8 +155,8 @@ For local dev: `npm run dev` runs Vite dev server on :5173 with proxy to :8080 f
 
 ## 7. Done Criteria
 
-- `npm run build` produces optimized static bundle
-- Docker image serves SPA at localhost:8080 (root redirects to /dashboard or /setup)
+- `npm run build` (Node 20 LTS, npm, package-lock.json) produces optimized static bundle in `frontend/dist/`
+- Docker image places build artifacts at `/app/frontend/dist`; root redirects: locked → /setup/unlock, !setup → /setup, ready → /dashboard
 - Client-side routing works (direct URL access to any route returns index.html)
 - API client correctly prefixes calls and handles errors
 - Brand colors, typography, and spacing match ai.market guidelines
