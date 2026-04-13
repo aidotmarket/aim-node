@@ -5,7 +5,7 @@
 **Epic:** AIM-NODE-UI
 **Phase:** 2 — Implementation
 **Prerequisite:** Gate 1 approved (S432), BQ-AIM-NODE-CONTRACTS Gate 4 complete
-**Author:** Vulcan (S435, R5 S436, R6 S436)
+**Author:** Vulcan (S435, R5–R7 S436)
 
 ---
 
@@ -281,7 +281,7 @@ Extend existing routes file with:
 - `request.app.state.process_mgr` → `ProcessManager`:
   - Has `start_provider()`, `stop_provider()`, `start_consumer()`, `stop_consumer()`
   - Has `_state` (ProcessStateStore ref), `_data_dir`, `_load_raw_config()`
-  - After C.3 changes: has `_provider_handler` (ProviderSessionHandler, set on `start_provider()`, cleared on `stop_provider()`) and `_consumer_session_mgr` (SessionManager, set on `start_consumer()`, cleared on `stop_consumer()`)
+  - After C.3 changes: has `_provider_handler` (ProviderSessionHandler, set on `start_provider()`, cleared after provider task exits) and `_consumer_session_mgr` (SessionManager, set on `start_consumer()`, cleared on `stop_consumer()`)
 - `request.app.state.store` → `ProcessStateStore` (has `_data_dir`, `_passphrase`, `_locked`, `_unlocked`, `_node_state`, `provider.running`, `get_status()`, `get_dashboard()`, `get_session()`, `remove_session()`, `get_passphrase()`, `determine_node_state()`, `_load_config()`, `_state_lock`)
 - `request.app.state.facade` → `MarketplaceFacade` (or None)
 - `DeviceCrypto(config, passphrase)` + `get_or_create_keypairs()` + `get_public_keys_b64()`
@@ -414,23 +414,25 @@ The current `ProcessManager` implementation creates session-layer objects as loc
 
 **1. Store ProviderSessionHandler on ProcessManager:**
 
-`ProcessManager.start_provider()` currently creates `ProviderSessionHandler` as a local variable (process.py ~line 74). Change to store on `self._provider_handler`. Clear on `stop_provider()`.
+`ProcessManager.start_provider()` currently creates `ProviderSessionHandler` as a local variable (process.py ~line 74). Store on `self._provider_handler` at creation. Clear the reference after the provider task exits (in the task's `finally` block), NOT in `stop_provider()`.
 
 ```python
 # In ProcessManager:
 async def start_provider(self):
     # ... existing setup ...
     handler = ProviderSessionHandler(config, adapter, trust_channel)
-    self._provider_handler = handler  # NEW: store for admin access
+    self._provider_handler = handler  # NEW: store for admin access (session_kill, etc.)
     await handler.start()
     # ...
 
-async def stop_provider(self):
-    if self._provider_handler is not None:
-        await self._provider_handler.stop()
-        self._provider_handler = None  # NEW: clear reference
-    # ... existing cleanup ...
+# In the provider task's _run() or equivalent finally block:
+finally:
+    # handler.stop() is ALREADY called here by existing code (process.py ~line 94)
+    # Just add reference cleanup:
+    self._provider_handler = None  # Clear after handler.stop() runs
 ```
+
+**IMPORTANT:** Do NOT add `self._provider_handler.stop()` to `stop_provider()`. The existing provider task's `finally` block already calls `handler.stop()` (process.py ~line 94, session_handler.py:55). Adding another call would double-stop. `stop_provider()` cancels the task → task's finally runs `handler.stop()` → reference cleared. That's the complete lifecycle.
 
 **2. SessionManager already stored as `_consumer_session_mgr`:**
 
@@ -448,7 +450,7 @@ def __init__(self, ...):
 All 5 handlers access session-layer objects via `request.app.state.process_mgr._consumer_session_mgr` and `request.app.state.process_mgr._provider_handler`. No `app.state` wiring changes needed in app factory.
 
 ### C.4 Done Criteria — Slice C
-- ProcessManager stores `_provider_handler` on start/stop lifecycle
+- ProcessManager stores `_provider_handler` on start, clears in task's finally (no double-stop)
 - Restart stops + starts provider, returns new health
 - Reload re-reads config, updates facade (sets None on failure), signals provider
 - Lock stops provider + consumer, clears passphrase from memory AND env, sets locked state
@@ -584,7 +586,7 @@ class AllAIConfirmResponse(BaseModel):
 3. Log tail and real-time WebSocket stream functional with security
 4. Provider restart/reload, node lock, keypair rotation all work
 5. Session kill force-closes real sessions (consumer + provider side) then removes snapshot
-6. ProcessManager stores `_provider_handler` for admin access
+6. ProcessManager stores `_provider_handler` for admin access (no double-stop)
 7. Static files + SPA fallback with correct cache headers
 8. allAI chat injects local context with redaction, confirm round-trip works
 9. All existing 31 routes still functional (no regressions)
