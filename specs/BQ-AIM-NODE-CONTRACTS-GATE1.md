@@ -60,34 +60,60 @@ These are single-tenant, local-only, and stored in local config/memory:
 
 ## 3. Auth Model
 
-### 3.1 Auth Chain: UI → Node → Backend
+### 3.1 Management Plane Security (UI → Node)
 
+**Mandate M1: Loopback-only bind + origin validation.**
+
+The management API (`/api/mgmt/*`) MUST enforce:
+
+1. **Bind to loopback only.** The CLI `serve` command MUST default to `--host 127.0.0.1` (not `0.0.0.0`). Docker compose binds `127.0.0.1:8080:8080`. An explicit `--host 0.0.0.0` flag is available for advanced users with a warning.
+
+2. **Origin/CSRF protection.** All state-mutating requests (POST/PUT/DELETE) MUST validate:
+   - `Origin` header matches `http://localhost:*` or `http://127.0.0.1:*`, OR
+   - A per-session CSRF token is present in `X-CSRF-Token` header (issued via `GET /api/mgmt/health` response).
+   - Requests without valid origin or token are rejected with 403.
+
+3. **No remote access without explicit opt-in.** If `--host 0.0.0.0` is used, the management API MUST require a local session token (issued on first localhost access, stored in browser, validated on every request).
+
+### 3.2 Node → Backend Auth Chain
+
+**Mandate M2: Exact auth per endpoint family.**
+
+The node authenticates to ai-market-backend using a two-step flow that already exists in `aim_node/core/auth.py`:
+
+1. **API Key Exchange:** Node sends `X-API-Key` header to `POST /auth/token` on the backend. Backend returns `access_token` + `refresh_token`. Tokens stored locally in `auth_token.json`.
+
+2. **Bearer Token:** All subsequent backend calls use `Authorization: Bearer {access_token}`. On 401, node refreshes via stored `refresh_token`.
+
+**Auth per endpoint family:**
+
+| Endpoint Family | Auth Method | Token Claims |
+|----------------|------------|-------------|
+| Registration (`/aim/nodes/register/challenge`, `/aim/nodes/register`) | `X-API-Key` (initial), then Ed25519 signed challenge-response | `node_id`, `public_key` |
+| Tool Publish (`/aim/nodes/{id}/tools/publish`) | Bearer token | `node_id`, `seller_id` |
+| Sessions (`/aim/sessions/*`) | Bearer token | `node_id`, `session_id` |
+| Metering (`/aim/metering/events`) | Bearer token + Ed25519 signed payload | `node_id` |
+| Payouts/Settlements (`/aim/payouts/*`, `/aim/settlements/*`) | Bearer token | `node_id`, `seller_id` |
+| Discovery (`/aim/discover/*`) | Bearer token (buyer) or public (search) | `node_id` |
+| Trust (`/aim/nodes/{id}/trust*`) | Bearer token | `node_id` |
+| Observability (`/aim/observability/*`) | Bearer token | `node_id` |
+| allAI (`/allie/chat/agentic`) | Bearer token (via API key) | `user_id` |
+
+**Registration choreography (full):**
 ```
-Browser (localhost)
-    │
-    │  No auth (localhost-only, same-machine)
-    ▼
-AIM Node Management API (localhost:8080)
-    │
-    │  JWT signed by node's Ed25519 keypair
-    │  + API key from config (for legacy endpoints)
-    ▼
-ai-market-backend (api.ai.market)
+1. Node calls POST /aim/nodes/register/challenge with {public_key, endpoint_url}
+2. Backend returns {challenge: random_bytes, challenge_id}
+3. Node signs challenge with Ed25519 private key
+4. Node calls POST /aim/nodes/register with {challenge_id, signature, public_key, endpoint_url}
+5. Backend verifies signature, creates/reactivates node, returns {node_id, node_serial}
+6. Node stores node_id in local config
 ```
 
-**UI → Node:** No authentication required. The management API is bound to localhost only. Network requests from non-localhost MUST be rejected (existing behavior via Starlette middleware or Docker port binding).
+### 3.3 Security Boundaries
 
-**Node → Backend:** The node authenticates to the backend using:
-1. **JWT** — signed by the node's Ed25519 private key, verified by backend via JWKS. Used for: session negotiation, heartbeat, tool publish, metering.
-2. **API key** — stored in local config, passed as `Authorization: Bearer {api_key}`. Used for: initial registration, legacy endpoints.
-
-**allAI proxy:** The node proxies allAI calls to `POST /api/v1/allie/chat/agentic` using the stored API key. The node injects local context (current page, config state, recent errors) into the system prompt before forwarding.
-
-### 3.2 Security Boundaries
-
-- The UI NEVER calls ai-market-backend directly. All marketplace data flows through the node's management API as a proxy/facade.
-- The node's private key and API key are NEVER exposed to the browser.
-- The `/allai/chat` proxy MUST strip any tool_use responses that would mutate state without user confirmation (copilot proposes, user confirms).
+- The UI NEVER calls ai-market-backend directly. All marketplace data flows through the node management API as a proxy/facade.
+- The node's private key, API key, and bearer tokens are NEVER exposed to the browser.
+- The `/allai/chat` proxy MUST apply redaction rules (Section 6) before forwarding context.
 
 ## 4. Node Proxy/Facade Pattern
 
@@ -102,18 +128,31 @@ Returns:   Formatted response to UI
 
 ### 4.1 Facade Endpoints (new, on aim-node)
 
+**Mandate M3: Complete facade coverage for every backend capability the UI consumes.**
+
 All under `/api/mgmt/marketplace/*`:
 
 | Local Endpoint | Proxies To | Purpose |
 |---------------|-----------|---------|
+| `GET /marketplace/node` | `GET /aim/nodes/mine` | Seller's node details |
 | `GET /marketplace/tools` | `GET /aim/nodes/{id}/tools` | Published tools list |
 | `POST /marketplace/tools/publish` | `POST /aim/nodes/{id}/tools/publish` | Publish a tool |
-| `GET /marketplace/earnings` | `GET /aim/payouts/summary` | Earnings rollups |
+| `PUT /marketplace/tools/{tool_id}` | `PUT /aim/nodes/{id}/tools/{tool_id}` | Update tool metadata |
+| `DELETE /marketplace/tools/{tool_id}` | `DELETE /aim/nodes/{id}/tools/{tool_id}` | Archive a tool |
+| `GET /marketplace/earnings` | `GET /aim/payouts/summary?node_id={id}` | Earnings rollups |
 | `GET /marketplace/earnings/history` | `GET /aim/payouts/history` | Payout history |
-| `GET /marketplace/sessions` | `GET /aim/sessions?node_id={id}` | Session history |
+| `GET /marketplace/sessions` | `GET /aim/sessions?node_id={id}` | Session history (marketplace view) |
+| `GET /marketplace/settlements` | `GET /aim/settlements?node_id={id}` | Settlement records |
 | `GET /marketplace/trust` | `GET /aim/nodes/{id}/trust` | Trust score |
-| `GET /marketplace/discover` | `POST /aim/discover/search` | Tool discovery (buyer) |
-| `POST /marketplace/allai` | `POST /allie/chat/agentic` | allAI proxy with context |
+| `GET /marketplace/trust/events` | `GET /aim/nodes/{id}/trust/events` | Trust event history |
+| `GET /marketplace/traces` | `GET /aim/observability/traces?node_id={id}` | Observability traces |
+| `GET /marketplace/listings` | `GET /listings?node_id={id}` | Listings originated by this node |
+| `GET /marketplace/discover` | `POST /aim/discover/search` | Tool discovery (buyer mode) |
+| `POST /marketplace/allai` | `POST /allie/chat/agentic` | allAI proxy with context injection |
+
+**Naming convention:** Local runtime sessions at `/api/mgmt/sessions/*` (existing). Marketplace session history at `/api/mgmt/marketplace/sessions`. The UI uses the namespace to distinguish local vs marketplace data.
+
+**Listings vs Tools:** A "tool" is a capability registered by a node. A "listing" is a marketplace entity that may reference one or more tools. The UI treats them as linked resources: the Tools screen shows local tools with their marketplace listing status.
 
 ### 4.2 Caching Strategy
 
@@ -125,47 +164,133 @@ All under `/api/mgmt/marketplace/*`:
 
 ## 5. Error Taxonomy
 
+**Mandate M5: Complete, normalized error contract.**
+
 ### 5.1 Error Response Format
 
-All management API errors follow a consistent format:
+All management API errors MUST follow this format. Current ad-hoc `{"error": ...}` responses must be migrated.
 
 ```json
 {
-  "error": "error_code",
-  "message": "Human-readable description",
-  "details": {},
-  "recoverable": true,
+  "code": "upstream_unreachable",
+  "message": "Cannot connect to http://localhost:8000",
+  "details": {"url": "http://localhost:8000", "timeout_ms": 3000},
+  "retryable": true,
+  "request_id": "req_abc123",
+  "suggested_action": "Check that your model server is running"
+}
+```
+
+Required fields: `code`, `message`. Optional: `details`, `retryable`, `request_id`, `suggested_action`.
+
+### 5.2 Error Code Registry
+
+| Code | HTTP | Category | When |
+|------|------|----------|------|
+| `setup_incomplete` | 412 | Precondition | Node not yet configured |
+| `node_locked` | 423 | Auth | Passphrase required to unlock |
+| `auth_failed` | 401 | Auth | Invalid API key or expired bearer token |
+| `csrf_rejected` | 403 | Auth | Missing or invalid CSRF/origin |
+| `forbidden` | 403 | Auth | Operation not permitted |
+| `not_found` | 404 | Resource | Session, tool, or resource not found |
+| `already_exists` | 409 | State | Keypair/resource already exists |
+| `already_running` | 409 | State | Provider/consumer already started |
+| `not_running` | 409 | State | Provider/consumer not started |
+| `config_invalid` | 422 | Validation | Missing required field or bad value |
+| `tool_validation_failed` | 422 | Validation | Schema mismatch or sample invoke failed |
+| `upstream_unreachable` | 502 | Connectivity | Model endpoint not responding |
+| `market_unreachable` | 502 | Connectivity | Cannot reach api.ai.market |
+| `market_error` | 502 | Connectivity | Backend returned non-2xx (passthrough details in `details`) |
+| `upstream_timeout` | 504 | Connectivity | Model endpoint timed out |
+| `market_timeout` | 504 | Connectivity | Backend request timed out |
+| `service_unavailable` | 503 | System | Node shutting down or unhealthy |
+| `rate_limited` | 429 | Throttle | Too many requests |
+| `internal_error` | 500 | System | Unexpected failure |
+
+### 5.3 Backend Error Passthrough
+
+When the node facade receives a non-2xx response from the backend, it wraps it:
+
+```json
+{
+  "code": "market_error",
+  "message": "Marketplace returned an error",
+  "details": {"status": 403, "backend_error": "Invalid or expired token", "endpoint": "/aim/nodes/register"},
+  "retryable": false,
   "suggested_action": "Check your API key in Settings"
 }
 ```
 
-### 5.2 Error Categories
+## 6. allAI Integration Contract
 
-| Code | HTTP | Category | Example |
-|------|------|----------|---------|
-| `setup_incomplete` | 412 | Precondition | Node not yet configured |
-| `node_locked` | 423 | Auth | Passphrase required |
-| `auth_failed` | 401 | Auth | Invalid API key or expired JWT |
-| `upstream_unreachable` | 502 | Connectivity | Model endpoint not responding |
-| `market_unreachable` | 502 | Connectivity | Cannot reach api.ai.market |
-| `tool_validation_failed` | 422 | Validation | Schema mismatch or sample invoke failed |
-| `config_invalid` | 422 | Validation | Missing required field |
-| `already_running` | 409 | State | Provider already started |
-| `not_running` | 409 | State | Provider not started |
-| `rate_limited` | 429 | Throttle | Too many requests to backend |
-| `internal_error` | 500 | System | Unexpected failure |
+**Mandate M4: Redaction, allowlist, confirmation, and failure semantics.**
 
-### 5.3 allAI Error Handling
+### 6.1 Context Injection Rules
 
-When allAI suggests an action that fails, the error response includes the allAI context so the assistant can diagnose:
+The node injects local context into allAI prompts. The following rules apply:
+
+**Allowed context (sent to backend):**
+- Current UI page/screen name
+- Node status (healthy/locked/setup_complete — booleans only)
+- Provider health (upstream_reachable, latency_ms — no URLs)
+- Tool names and schemas (public information, already on marketplace)
+- Error messages from last 5 failed operations
+- Session counts and aggregate metrics (no peer fingerprints)
+
+**Redacted (NEVER sent):**
+- API key / bearer tokens / refresh tokens
+- Ed25519 private key material
+- Passphrase
+- Raw config file contents (only sanitized summaries)
+- Peer fingerprints or buyer identifiers
+- Full log output (only last 5 error messages, truncated to 500 chars each)
+
+**Prompt size limit:** Max 4000 tokens of injected context per request.
+
+### 6.2 Tool Allowlist
+
+allAI may invoke these local tools via tool_use responses:
+
+**Read-only (auto-execute, no confirmation):**
+- `inspect_local_config` — returns sanitized config summary
+- `test_market_auth` — tests backend connectivity
+- `scan_provider_endpoint` — discovers tool schemas from upstream
+- `list_local_tools` — returns registered tool names
+- `tail_recent_logs` — last 20 log lines, errors only
+- `explain_last_failure` — describes most recent error
+
+**Generative (auto-execute, returns draft for user review):**
+- `generate_input_output_schema` — generates schema from endpoint inspection
+- `draft_publish_payload` — drafts tool publish request
+- `estimate_pricing` — suggests pricing based on marketplace data
+
+**Mutating (REQUIRES explicit user confirmation before execution):**
+- `test_tool_invocation` — sends a sample request to upstream
+- `recommend_spend_cap` — suggests config change (user must confirm)
+- `compare_provider_versions` — may trigger network calls
+
+### 6.3 Confirmation Contract
+
+For mutating tool_use, the node returns to the UI:
 
 ```json
 {
-  "error": "upstream_unreachable",
-  "message": "Cannot connect to http://localhost:8000",
-  "allai_context": "The user's upstream model endpoint is not responding. Possible causes: model server not running, wrong port, Docker networking issue."
+  "type": "action_proposed",
+  "tool": "test_tool_invocation",
+  "description": "Send a sample request to your model at http://localhost:8000",
+  "params": {"endpoint": "http://localhost:8000", "sample_input": {...}},
+  "requires_confirmation": true
 }
 ```
+
+The UI shows a confirmation dialog. On user approval, the UI sends `POST /allai/confirm` with the action ID. On rejection, the conversation continues without execution.
+
+### 6.4 Failure Semantics
+
+- If allAI proxy call fails (network, auth, rate limit): return error to chat UI with retry button
+- If tool execution fails: return error to allAI for diagnosis (loop continues)
+- If allAI returns no tool_use and no text: return generic "I couldn't help with that" message
+- Max tool_use loop depth: 5 iterations per user message
 
 ## 6. Data Flow Diagrams
 
@@ -225,7 +350,21 @@ UI → Renders response, shows confirmation button if action needed
 ## 9. Done Criteria
 
 - Ownership matrix accepted by Council (no ambiguous ownership)
-- Auth chain reviewed for security (no key exposure to browser)
-- Error taxonomy covers all UI-visible failure modes
+- Management plane security enforced (loopback bind + CSRF/origin validation)
+- Auth chain per endpoint family fully specified with exact header names and token flows
+- Registration challenge-response choreography documented
+- Facade routes cover every backend capability consumed by the UI
+- Local vs marketplace sessions clearly namespaced
+- Listings vs Tools relationship defined
+- Error taxonomy covers all UI-visible failure modes with normalized response format
+- allAI redaction rules, tool allowlist, confirmation contract, and failure semantics defined
 - Facade pattern validated (node never exposes raw backend URLs to UI)
-- allAI integration pattern agreed (copilot proposes, user confirms)
+
+## 10. R1 Review Response
+
+MP R1 verdict: REVISE (6 findings, 5 mandates). All addressed in this revision:
+- M1: Section 3.1 — loopback bind + CSRF/origin protection
+- M2: Section 3.2 — exact auth per endpoint family with registration choreography
+- M3: Section 4.1 — complete facade table with naming conventions
+- M4: Section 6 — full allAI contract (redaction, allowlist, confirmation, failure)
+- M5: Section 5 — expanded error taxonomy with 19 codes + backend passthrough
