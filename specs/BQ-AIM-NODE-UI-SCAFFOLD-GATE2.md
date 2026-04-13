@@ -5,7 +5,7 @@
 **Epic:** AIM-NODE-UI
 **Phase:** 2 — Implementation
 **Prerequisite:** Gate 1 approved (S432)
-**Author:** Vulcan (S435, R3 S436)
+**Author:** Vulcan (S435, R3 S436, R4 S436)
 
 ---
 
@@ -22,6 +22,7 @@ The `frontend/` directory does not yet exist. This BQ creates it from scratch. T
 aim_node/
 ├── management/app.py     — Starlette factory (static placeholder exists at line ~routes)
 ├── Dockerfile             — Python-only, needs multi-stage update
+├── entrypoint.sh          — Starts server with --data-dir /data
 └── ...
 ```
 
@@ -459,15 +460,15 @@ FROM python:3.11-slim-bookworm AS runtime
 # ... existing apt-get, COPY --from=builder, user creation ...
 
 # ADD THIS LINE after existing COPY --from=builder:
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+COPY --from=frontend-build /app/frontend/dist /data/frontend/dist
 
 # Ensure aimnode user owns frontend assets:
-# RUN chown -R aimnode:aimnode /app  (already exists)
+RUN chown -R aimnode:aimnode /data/frontend
 
 # ... existing ENTRYPOINT/CMD unchanged ...
 ```
 
-**Path alignment with MGMT-API-V2 Slice D:** The management app serves static files from `Path(data_dir) / "frontend" / "dist"`. In Docker, `data_dir` resolves to `/app` (the working directory and default data path). The COPY line places built assets at `/app/frontend/dist`, which matches exactly. This alignment is intentional and must be maintained — if `data_dir` default changes, update both specs.
+**Path alignment with MGMT-API-V2 Slice D:** The management app serves static files from `Path(data_dir) / "frontend" / "dist"`. In Docker, `data_dir` is `/data` (set by `entrypoint.sh --data-dir /data`, matching the CLI default in `cli.py:185` and the Dockerfile `VOLUME /data`). The COPY line places built assets at `/data/frontend/dist`, which matches `Path(data_dir) / "frontend" / "dist"` exactly. In non-Docker installs, `data_dir` is user-configured (typically `~/.aim-node/` or the working directory) and the built frontend must be manually placed in `{data_dir}/frontend/dist/`.
 
 **Key:** Only one new `FROM` stage and one new `COPY` line added. All existing Python builder/runtime logic, user creation (`aimnode`), and entrypoint remain untouched.
 
@@ -486,12 +487,12 @@ Update `README.md` or create `docs/DEVELOPMENT.md`:
 - Frontend dev: `cd frontend && npm install && npm run dev`
 - API proxy: Vite proxies /api to :8080
 - Build: `npm run build` outputs to frontend/dist
-- Docker: Multi-stage builds frontend automatically; assets land at `/app/frontend/dist`
+- Docker: Multi-stage builds frontend automatically; assets land at `/data/frontend/dist`
 - Brand tokens: How to use brand-* Tailwind classes
 - Base components: Import from `@/components/ui` barrel, variant/size API patterns
 
 ### C.4 Done Criteria — Slice C
-- `docker build` produces image with frontend assets at /app/frontend/dist
+- `docker build` produces image with frontend assets at `/data/frontend/dist`
 - Docker image size reasonable (< 500MB including Python + Node build cache)
 - README documents dev workflow and component library usage
 - CI: frontend build step added (npm ci + npm run build + npm test)
@@ -511,7 +512,7 @@ Update `README.md` or create `docs/DEVELOPMENT.md`:
 ## Done Criteria (Full BQ)
 
 1. `npm ci && npm run build` produces optimized bundle (Node 20, npm, package-lock.json)
-2. Docker multi-stage build places assets at /app/frontend/dist (aligned with MGMT-API-V2 data_dir path)
+2. Docker multi-stage build places assets at `/data/frontend/dist` (aligned with `data_dir=/data` in Docker runtime)
 3. 9 base component primitives: Button, Card, Badge, Input, Field, StatusBadge, PageHeader, Spinner, EmptyState
 4. App shell: sidebar nav, top bar with StatusBadge, responsive layout
 5. All 11 routes render placeholder pages using base components
