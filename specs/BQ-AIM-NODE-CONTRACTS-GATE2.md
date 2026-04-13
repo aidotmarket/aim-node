@@ -9,13 +9,26 @@
 
 ---
 
+**Revision History:**
+- R1 (S432, 4c015be): Initial draft
+- R2 (S433): Addressed MP R1 REVISE findings:
+  - F1: Added retry-on-401 with token refresh in facade._request (Gate 1 M2)
+  - F2: Resolved node_id vs node_serial — added node_id to AIMCoreConfig, clarified post-registration flow
+  - F3: Replaced stderr-only session token with "issued on first localhost access" model (Gate 1 M1)
+  - F4: Removed allAI endpoint from Gate 2 scope — deferred to BQ-AIM-NODE-ALLAI-COPILOT (Gate 1 compliance)
+  - F5: Fixed CONFIG_INVALID status contradiction — all CONFIG_INVALID now consistently 422
+  - F6: Changed /marketplace/discover from GET to POST (browser/OpenAPI compliance)
+  - F7: Removed /setup/test-upstream from backend gaps (aim-node owned per Gate 1)
+  - Codebase accuracy: 9 exception handlers (not 8), 6 inline errors (not ~5)
+
+
 ## Overview
 
 Gate 1 defined the contracts. Gate 2 implements them. Four slices, independent delivery order. Each slice has its own done criteria and tests.
 
 **Codebase baseline (as of Gate 2 draft):**
-- `aim_node/management/app.py` — Starlette app factory, 8 ad-hoc exception handlers
-- `aim_node/management/routes.py` — 17 route handlers, ~5 inline `{"error": ...}` responses
+- `aim_node/management/app.py` — Starlette app factory, 9 ad-hoc exception handlers
+- `aim_node/management/routes.py` — 17 route handlers, 6 inline `{"error": ...}` responses
 - `aim_node/management/schemas.py` — `ErrorResponse(BaseModel)` exists but is `error: str` only
 - `aim_node/core/auth.py` — `AuthService` with `get_auth_headers()` 
 - `aim_node/core/market_client.py` — `MarketClient` wraps auth + httpx
@@ -151,7 +164,7 @@ def make_market_error(
 
 ### A.2 Update `aim_node/management/app.py`
 
-Replace all 8 exception handlers to use `NormalizedError`. Import from `errors.py`.
+Replace all 9 exception handlers to use `NormalizedError`. Import from `errors.py`.
 
 **Mapping (old exception → new error code):**
 
@@ -162,9 +175,9 @@ Replace all 8 exception handlers to use `NormalizedError`. Import from `errors.p
 | `AlreadyRunningError` | `ALREADY_RUNNING` | 409 | None |
 | `NotRunningError` | `NOT_RUNNING` | 409 | None |
 | `FileExistsError` | `ALREADY_EXISTS` | 409 | None |
-| `ConfigError` | `CONFIG_INVALID` | 500 | "Check configuration file" |
+| `ConfigError` | `CONFIG_INVALID` | 422 | "Check configuration file" |
 | `ValidationError` (pydantic) | `CONFIG_INVALID` | 422 | None |
-| `ValueError` | `CONFIG_INVALID` | 400 | None |
+| `ValueError` | `CONFIG_INVALID` | 422 | None |
 | `HTTPException` (starlette) | map status code to nearest error code | passthrough | None |
 
 **Handler pattern (same for all):**
@@ -222,7 +235,7 @@ This keeps the name `ErrorResponse` available but now it resolves to the full co
 
 ### A.4 Update `aim_node/management/routes.py`
 
-Replace 5 inline `JSONResponse({"error": ...}, status_code=...)` calls with `NormalizedError`:
+Replace 6 inline `JSONResponse({"error": ...}, status_code=...)` calls with `NormalizedError`:
 
 | Location | Current | New code | HTTP |
 |----------|---------|----------|------|
@@ -400,14 +413,13 @@ def create_management_app(
     data_dir: Path,
     *,
     remote_bind: bool = False,
-    session_token: Optional[str] = None,
 ) -> Starlette:
 ```
 
 In `lifespan`:
 ```python
 app.state.remote_bind = remote_bind
-app.state.session_token = session_token
+app.state.session_token = None  # Issued on first loopback request (Gate 1 M1)
 ```
 
 ### B.3 Update `aim_node/management/routes.py` — health endpoint
@@ -454,31 +466,83 @@ Change `serve` command default from `0.0.0.0` to `127.0.0.1` (Contract M1):
               help="Bind host. Use 0.0.0.0 only with explicit intent — requires session token.")
 ```
 
-When `--host 0.0.0.0` is used, generate a session token and pass to factory:
+When `--host 0.0.0.0` is used, enable remote-bind mode (no pre-generated token):
 
 ```python
 def serve(data_dir: str, host: str, port: int) -> None:
     """Start the AIM Node management HTTP server."""
-    import secrets
     import uvicorn
     from aim_node.management.app import create_management_app
 
     remote_bind = host not in ("127.0.0.1", "localhost", "::1")
-    session_token: Optional[str] = None
     if remote_bind:
-        session_token = secrets.token_hex(32)
         click.echo(
             f"WARNING: Binding to {host}. Remote access enabled.\n"
-            f"Session token (include as X-Session-Token header): {session_token}",
+            f"Session token will be issued on first localhost access.",
             err=True,
         )
 
-    app = create_management_app(Path(data_dir), remote_bind=remote_bind,
-                                session_token=session_token)
+    app = create_management_app(Path(data_dir), remote_bind=remote_bind)
     uvicorn.run(app, host=host, port=port)
 ```
 
-The session token is printed once to stderr. The UI reads it from startup output or the user copies it manually. No persistence needed — it is ephemeral per process.
+**Session token lifecycle (Gate 1 M1 compliance):**
+
+1. App starts with `remote_bind=True`, `app.state.session_token = None`.
+2. First request from a loopback address (127.0.0.1, localhost, ::1) triggers token generation:
+   - `app.state.session_token = secrets.token_hex(32)`
+   - Token returned in response body (`session_token` field) AND `Set-Cookie: aim_session=<token>; HttpOnly; SameSite=Strict; Path=/`
+   - Token also printed to stderr as fallback for CLI/curl users
+3. Subsequent requests from any origin must include the token via `X-Session-Token` header or `aim_session` cookie.
+4. Token is ephemeral — lost on process restart.
+
+This matches Gate 1 M1: "issued on first localhost access, stored in browser, validated on every request."
+
+Update `CSRFMiddleware.dispatch()` in `middleware.py` to handle this:
+```python
+# In remote-bind session token check:
+if getattr(request.app.state, "remote_bind", False):
+    # Token issuance on first loopback request
+    if request.app.state.session_token is None:
+        if _origin_is_loopback_request(request):
+            import secrets, sys
+            token = secrets.token_hex(32)
+            request.app.state.session_token = token
+            print(f"Session token issued: {token}", file=sys.stderr)
+            # Token will be injected in response below
+        else:
+            # Non-loopback request before any loopback has issued a token
+            err = make_error(ErrorCode.AUTH_FAILED,
+                             "Session token not yet issued — access from localhost first",
+                             suggested_action="Open http://localhost:<port>/api/mgmt/health first")
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=401)
+    else:
+        # Token exists — validate
+        session_token = (
+            request.headers.get(SESSION_TOKEN_HEADER)
+            or request.cookies.get("aim_session")
+        )
+        if not hmac.compare_digest(session_token or "", request.app.state.session_token):
+            err = make_error(ErrorCode.AUTH_FAILED,
+                             "Session token required for remote access",
+                             suggested_action="Provide X-Session-Token header or aim_session cookie")
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=401)
+
+# ... after call_next:
+# If token was just issued this request, inject Set-Cookie
+if getattr(request.app.state, "_token_just_issued", False):
+    response.set_cookie("aim_session", request.app.state.session_token,
+                        httponly=True, samesite="strict", path="/")
+    request.app.state._token_just_issued = False
+```
+
+Add helper:
+```python
+def _origin_is_loopback_request(request: Request) -> bool:
+    """Check if the request originates from a loopback address."""
+    client_host = request.client.host if request.client else None
+    return client_host in _LOOPBACK_HOSTS
+```
 
 ### B.5 Tests
 
@@ -493,6 +557,9 @@ Unit/integration tests using `TestClient`:
 - `test_csrf_token_in_response_header` — GET /health response has `X-CSRF-Token` header
 - `test_remote_bind_valid_session_token_passes` — app with `remote_bind=True`, correct `X-Session-Token` passes
 - `test_remote_bind_missing_session_token_rejected` — app with `remote_bind=True`, no token → 401
+- `test_remote_bind_first_loopback_issues_token` — first request from 127.0.0.1 returns session_token in body + Set-Cookie
+- `test_remote_bind_non_loopback_before_issue_rejected` — non-loopback request before any loopback → 401 "not yet issued"
+- `test_remote_bind_cookie_auth_accepted` — request with aim_session cookie passes validation
 - `test_health_includes_csrf_token_in_body` — `GET /health` JSON body has `csrf_token` field
 
 **File:** `tests/test_cli.py` (extend existing)
@@ -560,11 +627,26 @@ class MarketplaceFacade:
 
     @classmethod
     def create(cls, config: "AIMCoreConfig") -> "MarketplaceFacade":
-        """Factory. Reads node_id from config.node_serial."""
+        """Factory. Reads node_id from config (set after registration).
+
+        Gate 1 defines a two-field model:
+        - node_serial: local identifier, set at first config creation
+        - node_id: backend-assigned UUID, returned by POST /aim/nodes/register
+          and stored in config after successful registration
+
+        The facade uses node_id for all backend API paths. If node_id is not
+        yet set (pre-registration), facade creation should be deferred.
+        """
         from aim_node.core.auth import AuthService
         auth = AuthService(config)
         client = MarketClient(config, auth_service=auth)
-        return cls(client, node_id=config.node_serial)
+        node_id = config.node_id
+        if not node_id:
+            raise ValueError(
+                "node_id not set in config — complete node registration first. "
+                "node_serial is a local identifier; node_id is the backend-assigned UUID."
+            )
+        return cls(client, node_id=node_id)
 
     async def get(
         self,
@@ -613,13 +695,28 @@ class MarketplaceFacade:
         *,
         params: Optional[dict[str, Any]] = None,
         json_body: Optional[dict[str, Any]] = None,
+        _is_retry: bool = False,
     ) -> dict[str, Any]:
-        """Execute request, normalize errors to FacadeError."""
+        """Execute request with retry-on-401, normalize errors to FacadeError.
+
+        Gate 1 M2 compliance: On 401, refresh the bearer token via AuthService
+        and retry the request exactly once. If the retry also fails, raise FacadeError.
+        """
         try:
             return await self.client._request(
                 method, path, params=params, json_body=json_body
             )
         except MarketClientHTTPError as exc:
+            # Retry-on-401: refresh token and retry once (Gate 1 M2)
+            if exc.status_code == 401 and not _is_retry and self.client.auth_service:
+                try:
+                    await self.client.auth_service.refresh()
+                except Exception:
+                    pass  # Refresh failed — fall through to original 401 handling
+                else:
+                    return await self._request(
+                        method, path, params=params, json_body=json_body, _is_retry=True
+                    )
             # Non-2xx backend response → Section 5.3 passthrough
             normalized = make_market_error(exc.status_code, str(exc), path)
             raise FacadeError(normalized, 502) from exc
@@ -670,6 +767,29 @@ class MarketplaceFacade:
                     del self._cache[key]
 ```
 
+
+
+**Required config change (Slice C prerequisite):**
+
+Add `node_id` to `AIMCoreConfig` in `aim_node/core/config.py`:
+
+```python
+@dataclass
+class AIMCoreConfig:
+    keystore_path: Path
+    node_serial: str
+    market_api_url: str = "https://api.ai.market"
+    market_ws_url: str = "wss://api.ai.market/ws"
+    data_dir: Path = field(default_factory=lambda: Path.home() / ".aim-node")
+    reconnect_delay_s: float = 5.0
+    reconnect_max_delay_s: float = 60.0
+    reconnect_jitter: float = 0.3
+    api_key: str | None = None
+    node_id: str | None = None  # Backend-assigned UUID, set after registration
+```
+
+`node_id` is populated by the registration flow (BQ-AIM-NODE-SETUP-WIZARD) which calls `POST /aim/nodes/register` and receives `{node_id, node_serial}`. The config writer stores `node_id` at that point. Until registration, `node_id` is `None` and the facade cannot be created.
+
 **Notes:**
 - `MarketClient._request` is currently a private method. Facade calls it directly — acceptable since both live in aim-node and MarketClient owns the auth retry logic. If `MarketClient` is refactored, update facade.
 - Cache key includes `params` stringified — not collision-proof for complex params, but sufficient for the simple query dicts in these routes.
@@ -677,7 +797,7 @@ class MarketplaceFacade:
 
 ### C.2 New File: `aim_node/management/marketplace.py`
 
-Concrete route handlers for all 15 facade endpoints from Section 4.1. Each handler follows the same pattern:
+Concrete route handlers for all 14 facade endpoints from Section 4.1. Each handler follows the same pattern:
 
 ```python
 from __future__ import annotations
@@ -898,7 +1018,7 @@ async def marketplace_listings(request: Request) -> JSONResponse:
 
 
 async def marketplace_discover(request: Request) -> JSONResponse:
-    """GET /api/mgmt/marketplace/discover — proxies POST /aim/discover/search"""
+    """POST /api/mgmt/marketplace/discover — proxies POST /aim/discover/search"""
     facade = _facade(request)
     try:
         body = await request.json()
@@ -913,22 +1033,10 @@ async def marketplace_discover(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
-async def marketplace_allai(request: Request) -> JSONResponse:
-    """POST /api/mgmt/marketplace/allai — proxies POST /allie/chat/agentic"""
-    # allAI context injection and redaction rules are out of scope for Gate 2.
-    # This stub proxies raw body. BQ-AIM-NODE-ALLAI-COPILOT owns the injection logic.
-    facade = _facade(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    try:
-        data = await facade.post("/allie/chat/agentic", json_body=body)
-    except FacadeError as exc:
-        return JSONResponse(
-            exc.normalized.model_dump(exclude_none=True), status_code=exc.http_status
-        )
-    return JSONResponse(data)
+# NOTE: allAI endpoint (/marketplace/allai) is NOT included in Gate 2.
+# Gate 1 requires redaction before forwarding and context injection (Section 6).
+# A raw passthrough stub would violate Gate 1 M3. This endpoint is deferred to
+# BQ-AIM-NODE-ALLAI-COPILOT which owns the full redaction/injection logic.
 ```
 
 ### C.3 Update `aim_node/management/app.py` — Register Facade Routes & Lifecycle
@@ -951,7 +1059,6 @@ from aim_node.management.marketplace import (
     marketplace_traces,
     marketplace_listings,
     marketplace_discover,
-    marketplace_allai,
 )
 
 # Append to _routes() return value:
@@ -968,8 +1075,7 @@ Route("/api/mgmt/marketplace/trust", marketplace_trust, methods=["GET"]),
 Route("/api/mgmt/marketplace/trust/events", marketplace_trust_events, methods=["GET"]),
 Route("/api/mgmt/marketplace/traces", marketplace_traces, methods=["GET"]),
 Route("/api/mgmt/marketplace/listings", marketplace_listings, methods=["GET"]),
-Route("/api/mgmt/marketplace/discover", marketplace_discover, methods=["GET"]),
-Route("/api/mgmt/marketplace/allai", marketplace_allai, methods=["POST"]),
+Route("/api/mgmt/marketplace/discover", marketplace_discover, methods=["POST"]),
 ```
 
 **Note on route ordering:** Starlette matches routes in registration order. `/marketplace/tools/publish` MUST be registered before `/marketplace/tools/{tool_id}` to prevent `publish` from being captured as a `tool_id`.
@@ -1043,7 +1149,10 @@ Unit tests (mock `MarketClient._request`):
 - `test_facade_market_error_wraps_to_facade_error` — `MarketClientHTTPError(403, ...)` → `FacadeError` with `code == "market_error"`
 - `test_facade_network_error_wraps_to_market_unreachable` — `MarketClientError` (no "timeout") → `code == "market_unreachable"`
 - `test_facade_timeout_wraps_to_market_timeout` — `MarketClientError("...timeout...")` → `code == "market_timeout"`
-- `test_make_market_error_passthrough_shape` — `details.status`, `details.backend_error`, `details.endpoint` all present
+- `test_make_market_error_passthrough_shape`
+- `test_facade_retry_on_401_refreshes_and_succeeds` — first call returns 401, mock refresh succeeds, retry returns 200
+- `test_facade_retry_on_401_refresh_fails_raises` — first call returns 401, refresh raises, FacadeError with auth_failed
+- `test_facade_no_double_retry_on_401` — second 401 after refresh does not retry again — `details.status`, `details.backend_error`, `details.endpoint` all present
 - `test_facade_invalidate_cache_clears_prefix` — publish call invalidates tools cache entry
 
 **File:** `tests/test_marketplace_routes.py` (new)
@@ -1058,7 +1167,7 @@ Integration tests (Starlette `TestClient`, mock `app.state.facade`):
 
 ### C.7 Done Criteria
 
-- All 15 facade routes registered and routable
+- All 14 facade routes registered and routable
 - `MarketplaceFacade.create()` wired in app lifespan
 - Each route returns backend response on success, `FacadeError` shape on failure
 - Cache TTLs match Section 4.2 table exactly
@@ -1074,7 +1183,7 @@ Integration tests (Starlette `TestClient`, mock `app.state.facade`):
 
 ### D.1 New File: `docs/openapi-facade.yaml`
 
-OpenAPI 3.1 fragment for all 15 aim-node facade endpoints (Section 4.1). Full spec — not just stubs.
+OpenAPI 3.1 fragment for all 14 aim-node facade endpoints (Section 4.1). Full spec — not just stubs.
 
 **Structure:**
 
@@ -1148,11 +1257,11 @@ paths:
 - `MarketTimeout` — 504, `code: market_timeout`
 - `CsrfRejected` — 403, `code: csrf_rejected`
 
-All 15 path entries must be present. Use `$ref` for error responses.
+All 14 path entries must be present. Use `$ref` for error responses.
 
 ### D.2 New File: `docs/openapi-backend-gaps.yaml`
 
-OpenAPI 3.1 fragment for the 10 new endpoints needed on ai-market-backend (Section 2.1 "Gaps" column). This is a spec for the backend team, not for aim-node.
+OpenAPI 3.1 fragment for the 9 new endpoints needed on ai-market-backend (Section 2.1 "Gaps" column). This is a spec for the backend team, not for aim-node.
 
 **Endpoints to document:**
 
@@ -1167,7 +1276,7 @@ OpenAPI 3.1 fragment for the 10 new endpoints needed on ai-market-backend (Secti
 | `/aim/payouts/summary` | GET | Rollup with `?node_id=&group_by=day` |
 | `/aim/observability/traces` | GET | Trace feed with `?node_id=&limit=` filter |
 | `/listings` | GET | Listings with `?node_id=` filter |
-| `/setup/test-upstream` | POST | Validate upstream model URL (aim-node owned) |
+
 
 Each entry must include: parameters, request body (if any), response schema (200 + error cases), auth requirement (`Bearer` or `X-API-Key`).
 
@@ -1260,8 +1369,8 @@ auth headers transparently.
 
 ### D.4 Done Criteria
 
-- `docs/openapi-facade.yaml` — all 15 facade paths present, ErrorResponse schema referenced, CSRF security scheme defined
-- `docs/openapi-backend-gaps.yaml` — all 10 backend gap endpoints present with parameters, response schemas, and auth requirements
+- `docs/openapi-facade.yaml` — all 14 facade paths present, ErrorResponse schema referenced, CSRF security scheme defined
+- `docs/openapi-backend-gaps.yaml` — all 9 backend gap endpoints present with parameters, response schemas, and auth requirements
 - `README.md` — "Auth Chain" section present with loopback/remote-bind flows and per-family auth table
 - YAML files are valid OpenAPI 3.1 (run `python3 -c "import yaml; yaml.safe_load(open('docs/openapi-facade.yaml'))"` to spot-check syntax)
 - No prose padding — every entry has actionable schema detail
