@@ -156,7 +156,7 @@ class TestUpstreamResponse(BaseModel):
 ```
 
 ### A.4 Error Handling
-- Upstream unreachable → `ErrorCode.UPSTREAM_UNREACHABLE` (503)
+- Upstream unreachable → `ErrorCode.UPSTREAM_UNREACHABLE` (502, per Contracts §5)
 - Upstream timeout → `ErrorCode.UPSTREAM_TIMEOUT` (504)
 - Tool not found in cache → `ErrorCode.NOT_FOUND` (404)
 - Validation failed → `ErrorCode.TOOL_VALIDATION_FAILED` (422) with details
@@ -369,18 +369,23 @@ if frontend_dir.exists():
 **SPA Fallback:** Add a catch-all route AFTER all API routes that serves `index.html` for non-API, non-static paths:
 ```python
 async def spa_fallback(request: Request) -> Response:
+    path = request.url.path
+    # Exclude API and static asset paths — only client routes get index.html
+    if path.startswith("/api/") or path.startswith("/assets/"):
+        raise HTTPException(404, "Not found")
     index_path = Path(data_dir) / "frontend" / "dist" / "index.html"
-    if index_path.exists():
-        return HTMLResponse(index_path.read_text(), headers={"Cache-Control": "no-cache"})
-    raise HTTPException(404, "UI not built")
+    if not index_path.exists():
+        raise HTTPException(404, "UI not built")
+    return HTMLResponse(index_path.read_text(), headers={"Cache-Control": "no-cache"})
 
-# Add as last route
+# Add as last route (after all API and static mounts)
 routes.append(Route("/{path:path}", spa_fallback, methods=["GET"])
 ```
 
-**Cache headers:**
-- `/assets/*` (fingerprinted): `Cache-Control: public, max-age=31536000, immutable`
-- `index.html`: `Cache-Control: no-cache`
+**Cache headers (via custom Starlette middleware, not StaticFiles defaults):**
+- `/assets/*` (fingerprinted): Add `CacheControlMiddleware` that intercepts responses for paths under `/assets/` and sets `Cache-Control: public, max-age=31536000, immutable`
+- `index.html`: Served by `spa_fallback` with explicit `Cache-Control: no-cache`
+- Implementation: Subclass `StaticFiles` or add a response middleware that matches path prefixes
 
 ### D.2 allAI Local Endpoints
 
@@ -470,3 +475,131 @@ class AllAIConfirmResponse(BaseModel):
 - Security hardening (already complete from Contracts)
 - Marketplace facade (already complete from Contracts)
 - Error normalization (already complete from Contracts)
+
+---
+
+## R2 Amendments (S435, addressing MP R1 findings F1–F4)
+
+### Amendment 1: allAI Endpoints — Full Contract Alignment (F1+F2)
+
+**Path correction:** Endpoints are `POST /allai/chat` and `POST /allai/confirm` (Gate 1 §2.11 paths preserved, NOT under `/api/mgmt/`). These sit outside the `/api/mgmt/marketplace/` prefix because they are local management capabilities with context injection.
+
+**allai_chat expanded flow (Contracts §6.1–6.2):**
+1. Parse `AllAIChatRequest` (message, conversation_id)
+2. **Context injection:** Gather local context — node status, active sessions, recent errors (from metrics), tool inventory (from discovery cache), config summary
+3. **Redaction:** Strip API keys, secrets, passphrase, session tokens from context. Use allowlist approach — only include explicitly safe fields
+4. **Tool allowlist:** Include `allowed_tools` in payload per Contracts §6.2. Default allowlist: `["tool_inventory", "node_status", "session_list", "earnings_summary"]`. Mutable via config
+5. **Forward:** `POST /allie/chat/agentic` via MarketplaceFacade with payload `{message, context, node_id, conversation_id, allowed_tools}`
+6. **Response parsing:** Backend returns `{reply, conversation_id, proposed_actions, suggestions}`. Each `proposed_action` has `{action_id, description, tool_name, params, requires_confirmation}`
+7. **Auto-exec vs confirm:** If `requires_confirmation == false` AND tool is in allowlist → execute locally and append result to reply. If `requires_confirmation == true` → return action to UI for user approval
+8. **Max tool loop depth:** 5 rounds of auto-exec before forcing confirmation (Contracts §6.2 safety bound)
+9. **Fallback:** If logs/metrics/tool inventory are unavailable, include `degraded_context: true` in payload. Backend handles gracefully
+
+**allai_confirm expanded flow (Contracts §6.3):**
+1. Parse `AllAIConfirmRequest(action_id, approved)`
+2. If `approved`: Execute the proposed action locally (action was stored in session state on the chat response). Return execution result
+3. If `!approved`: Discard the action, return `{status: "denied"}`
+4. No backend round-trip for confirm — actions execute locally. The backend already proposed the action; confirmation is a local gate
+5. If the action references a backend endpoint (e.g., publish tool), use MarketplaceFacade to proxy
+
+**Note:** Full NLU, tool routing logic, and agent orchestration are BQ-AIM-NODE-ALLAI-COPILOT scope. This BQ provides the transport layer + context injection + confirmation gate.
+
+### Amendment 2: ProcessStateStore Persistence for Tools + Metrics (F4)
+
+`ProcessStateStore` currently stores typed fields in-memory with JSON serialization to `{data_dir}/state.json`. Extend with generic KV persistence:
+
+```python
+# New methods on ProcessStateStore
+def get_store_data(self, key: str) -> dict | None:
+    """Read from {data_dir}/store/{key}.json"""
+    path = self.data_dir / "store" / f"{key}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+def set_store_data(self, key: str, data: dict) -> None:
+    """Atomic write to {data_dir}/store/{key}.json"""
+    store_dir = self.data_dir / "store"
+    store_dir.mkdir(exist_ok=True)
+    tmp = store_dir / f"{key}.json.tmp"
+    tmp.write_text(json.dumps(data, default=str))
+    tmp.rename(store_dir / f"{key}.json")
+```
+
+**Storage layout:**
+```
+{data_dir}/
+├── state.json           # Existing typed state
+├── store/
+│   ├── discovered_tools.json  # Tool cache (Slice A)
+│   ├── local_metrics.json     # Metrics counters (Slice B)
+│   └── metrics_timeseries.json # 5-min buckets (Slice B)
+```
+
+**Locking:** Single-process (management API runs as one uvicorn worker), so no file locking needed. Atomic write via tmp+rename prevents corruption.
+
+**Versioning:** Each store file includes a `_version: 1` field. Future schema changes bump version; reader handles migration.
+
+### Amendment 3: ProcessManager Interface Extensions (F3)
+
+Define exact new methods before using in pseudocode:
+
+```python
+# New methods on ProcessManager (process.py)
+
+async def restart_provider(self) -> dict:
+    """Stop then start provider. Returns new health status."""
+    await self.stop_provider()
+    await self.start_provider()
+    return await self.get_provider_health()
+
+async def reload_provider_config(self) -> None:
+    """Re-read config, update running provider's config in-place.
+    If provider not running, no-op (config applies on next start)."""
+    raw = read_config(self._data_dir)
+    self._config = load_config(raw)
+    if self._provider_proc is not None:
+        # Signal provider to reload (implementation: write config to shared state,
+        # provider checks on next request cycle — no SIGHUP needed)
+        self._state.set_provider_config(self._config)
+
+def is_provider_running(self) -> bool:
+    """Check if provider subprocess is alive."""
+    return self._provider_proc is not None and self._provider_proc.returncode is None
+
+async def kill_session(self, session_id: str) -> bool:
+    """Force-close a specific session. Returns True if found and killed."""
+    # Delegates to SessionHandler.close_session(session_id)
+    # Returns False if session_id not in active sessions
+```
+
+```python
+# New methods on ProcessStateStore (state.py)
+
+def clear_passphrase(self) -> None:
+    """Securely clear passphrase from memory and persisted state."""
+    self._passphrase = None
+    self._save()  # Writes state.json without passphrase field
+
+def set_locked(self, locked: bool) -> None:
+    """Set node lock state."""
+    self._locked = locked
+    self._save()
+
+@property
+def is_locked(self) -> bool:
+    return self._locked
+```
+
+**keypair_rotate implementation:**
+Uses existing `DeviceCrypto` class but adds a `rotate()` classmethod:
+```python
+# In aim_node/core/crypto.py
+@classmethod
+def rotate(cls, data_dir: Path) -> "DeviceCrypto":
+    """Generate new keypair, overwrite existing keystore."""
+    keystore_path = data_dir / "keystore.json"
+    if keystore_path.exists():
+        keystore_path.rename(data_dir / "keystore.json.bak")
+    return cls.generate(data_dir)
+```
