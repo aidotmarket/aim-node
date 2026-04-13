@@ -72,7 +72,9 @@ async def test_locked_provider_start_returns_423(locked_app):
     async with make_client(app) as client:
         r = await client.post("/api/mgmt/provider/start")
     assert r.status_code == 423
-    assert "locked" in r.json()["error"].lower() or "unlock" in r.json()["error"].lower()
+    body = r.json()
+    assert body["code"] == "node_locked"
+    assert "locked" in body["message"].lower() or "unlock" in body["message"].lower()
 
 
 @pytest.mark.asyncio
