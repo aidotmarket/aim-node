@@ -34,7 +34,7 @@ aim_node/
 │   ├── middleware.py    — CSRFMiddleware (CSRF + origin + session token)
 │   ├── errors.py       — ErrorCode (19 codes), NormalizedError, make_error()
 │   ├── schemas.py      — Pydantic request/response models
-│   ├── state.py        — ProcessStateStore (JSON persistence)
+│   ├── state.py        — ProcessStateStore (in-memory singleton, reads config.toml for setup state)
 │   ├── process.py      — ProcessManager (provider/consumer lifecycle)
 │   └── config_writer.py — Config R/W helpers
 ├── core/
@@ -259,13 +259,18 @@ Extend existing routes file with:
 
 | Method | Path | Handler | Description |
 |--------|------|---------|-------------|
-| `POST` | `/api/mgmt/provider/restart` | `provider_restart` | Stop + start provider, return new health |
-| `POST` | `/api/mgmt/provider/reload` | `provider_reload` | Hot-reload config (re-read config file, apply without process restart) |
-| `POST` | `/api/mgmt/lock` | `lock_node` | Clear passphrase from memory, stop provider, set locked state |
-| `POST` | `/api/mgmt/keypair/rotate` | `keypair_rotate` | Generate new keypair, update keystore, re-register with backend |
+| `POST` | `/api/mgmt/provider/restart` | `provider_restart` | Stop + start provider, return new dashboard |
+| `POST` | `/api/mgmt/provider/reload` | `provider_reload` | Re-read config.toml, restart provider if running |
+| `POST` | `/api/mgmt/lock` | `lock_node` | Clear passphrase, stop provider, set locked state |
+| `POST` | `/api/mgmt/keypair/rotate` | `keypair_rotate` | Generate new keypair, re-register with backend |
 | `DELETE` | `/api/mgmt/sessions/{session_id}` | `session_kill` | Force-close a stuck session |
 
-### C.2 Implementation Notes
+### C.2 Implementation Notes (using actual codebase interfaces)
+
+**Actual interfaces available:**
+- `request.app.state.process_mgr` → `ProcessManager` (has `start_provider()`, `stop_provider()`, `_state`, `_data_dir`, `_load_raw_config()`)
+- `request.app.state.store` → `ProcessStateStore` (has `_data_dir`, `_passphrase`, `_locked`, `_unlocked`, `_node_state`, `provider.running`, `get_status()`, `get_dashboard()`, `get_session()`, `remove_session()`, `get_passphrase()`, `determine_node_state()`, `_load_config()`, `_state_lock`)
+- `DeviceCrypto(config, passphrase)` + `get_or_create_keypairs()` + `get_public_keys_b64()`
 
 **provider_restart:**
 ```python
@@ -273,36 +278,44 @@ async def provider_restart(request):
     pm = request.app.state.process_mgr
     await pm.stop_provider()
     await pm.start_provider()
-    health = await pm.provider_health()
-    return JSONResponse({"status": "restarted", "health": health})
+    return JSONResponse({"status": "restarted", "dashboard": request.app.state.store.get_dashboard()})
 ```
 
 **provider_reload:**
 ```python
 async def provider_reload(request):
-    data_dir = request.app.state.store.data_dir
-    raw = read_config(data_dir)
-    core_cfg = load_config(raw)
+    store = request.app.state.store
+    store._load_config()  # Re-read config.toml
+    store.determine_node_state()
     # Update facade with new config
-    request.app.state.facade = MarketplaceFacade.create(core_cfg)
-    # Signal provider to reload (if running)
+    from aim_node.management.config_writer import read_config
+    raw = read_config(store._data_dir)
+    try:
+        request.app.state.facade = MarketplaceFacade.create(_load_core_config(raw))
+    except Exception:
+        pass  # Facade update optional
+    # Restart provider if running to pick up new config
     pm = request.app.state.process_mgr
-    if pm.is_provider_running():
-        await pm.reload_provider_config(core_cfg)
+    if store.provider.running:
+        await pm.stop_provider()
+        await pm.start_provider()
     return JSONResponse({"status": "reloaded"})
 ```
 
 **lock_node:**
 ```python
 async def lock_node(request):
-    pm = request.app.state.process_mgr
     store = request.app.state.store
+    pm = request.app.state.process_mgr
     # Stop provider if running
-    if pm.is_provider_running():
+    if store.provider.running:
         await pm.stop_provider()
-    # Clear passphrase from state
-    store.clear_passphrase()
-    store.set_locked(True)
+    # Clear passphrase and set locked state
+    with store._state_lock:
+        store._passphrase = None
+        store._locked = True
+        store._unlocked = False
+        store._node_state = NodeState.LOCKED
     return JSONResponse({"status": "locked"})
 ```
 
@@ -310,36 +323,39 @@ async def lock_node(request):
 ```python
 async def keypair_rotate(request):
     store = request.app.state.store
-    data_dir = store.data_dir
-    # Generate new Ed25519 keypair
-    crypto = DeviceCrypto.generate(data_dir)
-    # Re-register with backend
+    data_dir = store._data_dir
+    keystore_path = data_dir / "keystore.json"
+    # Backup existing keystore
+    if keystore_path.exists():
+        keystore_path.rename(data_dir / "keystore.json.bak")
+    # Generate new keypair using existing DeviceCrypto interface
+    passphrase = store.get_passphrase() or ""
+    config = type("C", (), {"keystore_path": keystore_path, "data_dir": data_dir})()
+    crypto = DeviceCrypto(config, passphrase=passphrase)
+    crypto.get_or_create_keypairs()
+    pub_keys = crypto.get_public_keys_b64()
+    # Re-register with backend via facade
     facade = request.app.state.facade
     if facade:
-        await facade.post("/aim/nodes/keypair", {
-            "public_key": crypto.public_key_pem,
-            "fingerprint": crypto.fingerprint,
-        })
-    return JSONResponse({"status": "rotated", "fingerprint": crypto.fingerprint})
+        await facade.post("/aim/nodes/keypair", {"public_key": pub_keys[0]})
+    return JSONResponse({"status": "rotated"})
 ```
 
 **session_kill:**
 ```python
 async def session_kill(request):
     session_id = request.path_params["session_id"]
-    pm = request.app.state.process_mgr
-    killed = await pm.kill_session(session_id)
-    if not killed:
+    store = request.app.state.store
+    session = store.get_session(session_id)
+    if session is None:
         raise HTTPException(404, f"Session {session_id} not found")
+    store.remove_session(session_id)
     return JSONResponse({"status": "killed", "session_id": session_id})
 ```
 
-### C.3 ProcessManager Extensions
+### C.3 No ProcessManager Extensions Needed
 
-Add to `process.py`:
-- `reload_provider_config(config)` — send config update signal to running provider
-- `kill_session(session_id)` — force-close a specific session
-- `is_provider_running()` → bool
+All 5 handlers use existing `ProcessManager` and `ProcessStateStore` APIs directly. No new methods required on these classes. The lock handler manipulates state fields directly under `_state_lock` (same pattern as `unlock()` in state.py).
 
 ### C.4 Done Criteria — Slice C
 - Restart stops + starts provider, returns new health
@@ -492,108 +508,31 @@ class AllAIConfirmResponse(BaseModel):
 
 ---
 
-## R3 Amendments (S435, addressing MP R2 findings 1–4)
+---
 
-### Amendment: ProcessStateStore Persistence (replaces R2 Amendment 2)
+## Persistence Note (applies to Slices A + B)
 
-`ProcessStateStore` is a thread-safe singleton that reads `config.toml` for setup state and holds everything else in-memory. It has NO generic persistence to `state.json`. For tools cache and metrics, add a new file-backed KV layer:
+`ProcessStateStore` is an in-memory singleton that reads `config.toml` for setup state. It has NO generic KV persistence. For tool cache and metrics that need to survive restarts, use file-based storage under `{_data_dir}/store/`:
 
 ```python
-# New methods on ProcessStateStore (state.py)
-# Use self._data_dir (existing private field)
+# Utility functions used by Slices A + B (add to state.py or a new utils module)
+import json
+from pathlib import Path
 
-def get_store_data(self, key: str) -> dict | None:
-    """Read from {_data_dir}/store/{key}.json. Returns None if missing."""
-    path = self._data_dir / "store" / f"{key}.json"
-    if not path.exists():
-        return None
-    import json
-    return json.loads(path.read_text())
+def read_store(data_dir: Path, key: str) -> dict | None:
+    path = data_dir / "store" / f"{key}.json"
+    return json.loads(path.read_text()) if path.exists() else None
 
-def set_store_data(self, key: str, data: dict) -> None:
-    """Atomic write to {_data_dir}/store/{key}.json via tmp+rename."""
-    import json
-    store_dir = self._data_dir / "store"
+def write_store(data_dir: Path, key: str, data: dict) -> None:
+    store_dir = data_dir / "store"
     store_dir.mkdir(exist_ok=True)
     tmp = store_dir / f"{key}.json.tmp"
     tmp.write_text(json.dumps(data, default=str))
     tmp.rename(store_dir / f"{key}.json")
-
-def lock_node(self) -> None:
-    """Clear passphrase from memory, set locked state."""
-    with self._state_lock:
-        self._passphrase = None
-        self._locked = True
-        self._unlocked = False
-        self._node_state = NodeState.LOCKED
 ```
 
-Storage layout: `{data_dir}/store/discovered_tools.json`, `local_metrics.json`, `metrics_timeseries.json`. Atomic write via tmp+rename. Single-process (uvicorn single worker), no file locking. Each file includes `_version: 1` for future schema migration.
+Storage layout: `{data_dir}/store/discovered_tools.json`, `local_metrics.json`, `metrics_timeseries.json`. Atomic write via tmp+rename. Single-process (uvicorn single worker), no file locking needed.
 
-### Amendment: ProcessManager Extensions (replaces R2 Amendment 3)
+Slice A's `scan_upstream()` and `validate_tool()` use `write_store(store._data_dir, "discovered_tools", ...)` and `read_store(store._data_dir, "discovered_tools")`.
 
-Extends `ProcessManager` (process.py) using actual internals (`_provider_task`, `_state`, `_data_dir`, `_load_raw_config()`):
-
-```python
-# ProcessManager already has: start_provider(), stop_provider()
-# Uses: _provider_task (asyncio.Task), _state (ProcessStateStore), _data_dir
-
-async def restart_provider(self) -> dict:
-    """Stop then start provider. Returns dashboard status."""
-    await self.stop_provider()
-    await self.start_provider()
-    return self._state.get_dashboard()
-
-async def reload_config(self) -> None:
-    """Re-read config.toml, update state. If provider running, stop+start."""
-    self._state._load_config()  # Re-read config.toml
-    self._state.determine_node_state()
-    # If provider running, restart to pick up new config
-    if self._state.provider.running:
-        await self.restart_provider()
-
-def is_provider_running(self) -> bool:
-    return self._state.provider.running
-
-async def kill_session(self, session_id: str) -> bool:
-    """Force-remove session from state. Returns False if not found."""
-    session = self._state.get_session(session_id)
-    if session is None:
-        return False
-    self._state.remove_session(session_id)
-    return True
-```
-
-### Amendment: DeviceCrypto Rotation (replaces R2 Amendment 3 crypto section)
-
-`DeviceCrypto.__init__(config, passphrase)` + `get_or_create_keypairs()`. No `generate()` classmethod exists. Rotation:
-
-```python
-# In aim_node/management/routes.py — keypair_rotate handler
-async def keypair_rotate(request: Request) -> JSONResponse:
-    store = request.app.state.store
-    data_dir = store._data_dir
-    keystore_path = data_dir / "keystore.json"
-    
-    # Backup existing keystore
-    if keystore_path.exists():
-        keystore_path.rename(data_dir / "keystore.json.bak")
-    
-    # Generate new keypair using existing DeviceCrypto interface
-    passphrase = store.get_passphrase() or ""
-    config = type("C", (), {"keystore_path": keystore_path, "data_dir": data_dir})()
-    crypto = DeviceCrypto(config, passphrase=passphrase)
-    crypto.get_or_create_keypairs()
-    
-    # Re-register with backend via facade
-    facade = request.app.state.facade
-    if facade:
-        pub_keys = crypto.get_public_keys_b64()
-        await facade.post("/aim/nodes/keypair", {"public_key": pub_keys[0]})
-    
-    return JSONResponse({"status": "rotated"})
-```
-
-### Amendment: allAI Tool Allowlist (Contracts §6.2 aligned)
-
-Default allowlist from Contracts §6.2: `["inspect_local_config", "test_market_auth", "scan_provider_endpoint", "list_local_tools", "tail_recent_logs", "explain_last_failure"]`. Plus generative tools: `["draft_tool_description", "suggest_pricing"]`. Plus mutating tools (always require confirmation): `["publish_tool", "update_config", "rotate_keypair"]`.
+Slice B's `MetricsCollector` uses `write_store(store._data_dir, "local_metrics", ...)` for counter persistence across restarts.
