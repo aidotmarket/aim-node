@@ -5,7 +5,7 @@
 **Epic:** AIM-NODE-UI
 **Phase:** 2 — Implementation
 **Prerequisite:** Gate 1 approved (S432), BQ-AIM-NODE-CONTRACTS Gate 4 complete
-**Author:** Vulcan (S435, R5–R7 S436)
+**Author:** Vulcan (S435, R5–R8 S436)
 
 ---
 
@@ -475,7 +475,7 @@ if frontend_dir.exists():
     # index.html gets no-cache
 ```
 
-**Path alignment with Docker:** In Docker, the working directory and `data_dir` both resolve to `/app`. The UI-SCAFFOLD BQ's Dockerfile copies built assets to `/app/frontend/dist`, which matches `Path(data_dir) / "frontend" / "dist"`. In non-Docker installs, `data_dir` is user-configured (typically `~/.aim-node/` or the current directory).
+**Path alignment with Docker:** In Docker, `data_dir` is `/data` (set by `entrypoint.sh --data-dir /data`, matching the CLI default in `cli.py:185` and the Dockerfile `/data` directory creation). The UI-SCAFFOLD BQ's Dockerfile copies built assets to `/data/frontend/dist`, which matches `Path(data_dir) / "frontend" / "dist"`. In non-Docker installs, `data_dir` is user-configured (typically `~/.aim-node/` or the working directory).
 
 **SPA Fallback:** Add a catch-all route AFTER all API routes that serves `index.html` for non-API, non-static paths:
 ```python

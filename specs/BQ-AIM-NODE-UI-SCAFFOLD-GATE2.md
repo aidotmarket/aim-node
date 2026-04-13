@@ -5,7 +5,7 @@
 **Epic:** AIM-NODE-UI
 **Phase:** 2 — Implementation
 **Prerequisite:** Gate 1 approved (S432)
-**Author:** Vulcan (S435, R3 S436, R4 S436)
+**Author:** Vulcan (S435, R3–R5 S436)
 
 ---
 
@@ -468,7 +468,7 @@ RUN chown -R aimnode:aimnode /data/frontend
 # ... existing ENTRYPOINT/CMD unchanged ...
 ```
 
-**Path alignment with MGMT-API-V2 Slice D:** The management app serves static files from `Path(data_dir) / "frontend" / "dist"`. In Docker, `data_dir` is `/data` (set by `entrypoint.sh --data-dir /data`, matching the CLI default in `cli.py:185` and the Dockerfile `VOLUME /data`). The COPY line places built assets at `/data/frontend/dist`, which matches `Path(data_dir) / "frontend" / "dist"` exactly. In non-Docker installs, `data_dir` is user-configured (typically `~/.aim-node/` or the working directory) and the built frontend must be manually placed in `{data_dir}/frontend/dist/`.
+**Path alignment with MGMT-API-V2 Slice D:** The management app serves static files from `Path(data_dir) / "frontend" / "dist"`. In Docker, `data_dir` is `/data` (set by `entrypoint.sh --data-dir /data`, matching the CLI default in `cli.py:185` and the Dockerfile `/data` directory creation at line ~50). The COPY line places built assets at `/data/frontend/dist`, which matches `Path(data_dir) / "frontend" / "dist"` exactly. In non-Docker installs, `data_dir` is user-configured (typically `~/.aim-node/` or the working directory) and the built frontend must be manually placed in `{data_dir}/frontend/dist/`.
 
 **Key:** Only one new `FROM` stage and one new `COPY` line added. All existing Python builder/runtime logic, user creation (`aimnode`), and entrypoint remain untouched.
 
