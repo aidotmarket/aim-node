@@ -573,7 +573,7 @@ Unit/integration tests using `TestClient`:
 - POST with `Origin: http://localhost:3000` passes without CSRF token
 - POST with correct `X-CSRF-Token` passes regardless of Origin
 - `aim-node serve` defaults to `--host 127.0.0.1`
-- `--host 0.0.0.0` prints session token and enables `X-Session-Token` enforcement
+- `--host 0.0.0.0` issues session token on first localhost access and enforces `X-Session-Token`/cookie validation
 - All B.5 tests pass
 
 ---
@@ -1132,7 +1132,6 @@ if (facade := _facade(request)) is None:
 | `/marketplace/traces` | none | Real-time |
 | `/marketplace/listings` | 30s | Changes on publish/archive |
 | `/marketplace/discover` | none | Search results vary by query |
-| `/marketplace/allai` | none | Conversational |
 
 ### C.5 New Packages Required
 
@@ -1335,8 +1334,9 @@ ai-market-backend directly.
 - Alternatively, requests from `Origin: http://localhost:*` pass without CSRF token
 
 **Remote access** (`--host 0.0.0.0`):
-- Session token printed to stderr on server startup
-- Include `X-Session-Token: <token>` on every request
+- Session token issued on first request from localhost (Gate 1 M1)
+- Token delivered via `Set-Cookie: aim_session` and in response body; also printed to stderr as fallback
+- Subsequent requests from any origin must include `X-Session-Token` header or `aim_session` cookie
 
 ### Node → Backend (Marketplace Plane)
 
