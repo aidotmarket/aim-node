@@ -88,10 +88,14 @@ def build_app(data_dir: Path):
     return app, state, process_mgr
 
 
-def make_client(app) -> httpx.AsyncClient:
+def make_client(app, *, headers: dict[str, str] | None = None) -> httpx.AsyncClient:
+    default_headers = {"Origin": "http://localhost"}
+    if headers:
+        default_headers.update(headers)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
+        headers=default_headers,
     )
 
 
