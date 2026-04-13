@@ -6,6 +6,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from aim_node.management.errors import NormalizedError
+
 
 def _validate_http_url(v: Optional[str]) -> Optional[str]:
     if v is None:
@@ -187,5 +189,4 @@ class KeypairInfoResponse(BaseModel):
     created_at: str
 
 
-class ErrorResponse(BaseModel):
-    error: str
+ErrorResponse = NormalizedError  # backwards-compatible alias

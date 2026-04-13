@@ -14,6 +14,11 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from aim_node.management.errors import (
+    ErrorCode,
+    HTTP_STATUS_TO_CODE,
+    make_error,
+)
 from aim_node.management.process import (
     AlreadyRunningError,
     ConfigError,
@@ -75,42 +80,74 @@ def _routes() -> list[Route]:
 
 
 async def _precondition_handler(request: Request, exc: PreconditionError) -> JSONResponse:
-    return JSONResponse({"error": str(exc) or "Precondition failed"}, status_code=412)
+    err = make_error(
+        ErrorCode.SETUP_INCOMPLETE,
+        str(exc) or "Precondition failed",
+        suggested_action="Complete node setup first",
+    )
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=412)
 
 
 async def _locked_handler(request: Request, exc: LockedError) -> JSONResponse:
-    return JSONResponse({"error": str(exc) or "Node locked"}, status_code=423)
+    err = make_error(
+        ErrorCode.NODE_LOCKED,
+        str(exc) or "Node locked",
+        suggested_action="Unlock the node before proceeding",
+    )
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=423)
 
 
 async def _already_running_handler(request: Request, exc: AlreadyRunningError) -> JSONResponse:
-    return JSONResponse({"error": str(exc) or "Already running"}, status_code=409)
+    err = make_error(ErrorCode.ALREADY_RUNNING, str(exc) or "Already running")
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=409)
 
 
 async def _not_running_handler(request: Request, exc: NotRunningError) -> JSONResponse:
-    return JSONResponse({"error": str(exc) or "Not running"}, status_code=409)
+    err = make_error(ErrorCode.NOT_RUNNING, str(exc) or "Not running")
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=409)
 
 
 async def _file_exists_handler(request: Request, exc: FileExistsError) -> JSONResponse:
-    return JSONResponse({"error": str(exc) or "Already exists"}, status_code=409)
+    err = make_error(ErrorCode.ALREADY_EXISTS, str(exc) or "Already exists")
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=409)
 
 
 async def _validation_error_handler(request: Request, exc: ValidationError) -> JSONResponse:
     errors = exc.errors(include_url=False, include_context=False, include_input=False)
-    return JSONResponse({"error": errors}, status_code=422)
+    err = make_error(
+        ErrorCode.CONFIG_INVALID,
+        "Validation failed",
+        details={"fields": errors},
+    )
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=422)
 
 
 async def _config_error_handler(request: Request, exc: ConfigError) -> JSONResponse:
-    return JSONResponse({"error": str(exc) or "Config error"}, status_code=500)
+    err = make_error(
+        ErrorCode.CONFIG_INVALID,
+        str(exc) or "Config error",
+        suggested_action="Check configuration file",
+    )
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=422)
 
 
 async def _value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     # Catch-all for stray ValueError from route logic. Should be rare after
     # ConfigError introduction; pydantic ValidationError is handled separately (422).
-    return JSONResponse({"error": str(exc)}, status_code=400)
+    err = make_error(ErrorCode.CONFIG_INVALID, str(exc) or "Invalid configuration")
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=422)
 
 
 async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    code = HTTP_STATUS_TO_CODE.get(exc.status_code, ErrorCode.INTERNAL_ERROR)
+    err = make_error(code, str(exc.detail) if exc.detail else "Request failed")
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=exc.status_code)
+
+
+async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception in management API")
+    err = make_error(ErrorCode.INTERNAL_ERROR, "An unexpected error occurred")
+    return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
 
 
 def create_management_app(data_dir: Path) -> Starlette:
@@ -154,6 +191,7 @@ def create_management_app(data_dir: Path) -> Starlette:
         ValidationError: _validation_error_handler,
         ValueError: _value_error_handler,
         HTTPException: _http_exception_handler,
+        Exception: _unhandled_handler,
     }
 
     app = Starlette(

@@ -214,6 +214,10 @@ async def test_setup_keypair_duplicate_409(setup_complete_app):
     async with _make_client(app) as client:
         r = await client.post("/api/mgmt/setup/keypair", json={"passphrase": ""})
     assert r.status_code == 409
+    body = r.json()
+    assert body["code"] == "already_exists"
+    assert body["message"] == "Keypair already exists"
+    assert body["request_id"].startswith("req_")
 
 
 # 7
@@ -399,6 +403,9 @@ async def test_provider_start_when_locked_423(locked_app):
     async with _make_client(app) as client:
         r = await client.post("/api/mgmt/provider/start")
     assert r.status_code == 423
+    body = r.json()
+    assert body["code"] == "node_locked"
+    assert body["request_id"].startswith("req_")
 
 
 # 21
@@ -407,6 +414,9 @@ async def test_provider_start_when_setup_incomplete_412(fresh_app):
     async with _make_client(app) as client:
         r = await client.post("/api/mgmt/provider/start")
     assert r.status_code == 412
+    body = r.json()
+    assert body["code"] == "setup_incomplete"
+    assert body["request_id"].startswith("req_")
 
 
 # 22
@@ -532,6 +542,10 @@ async def test_session_detail_not_found_404(setup_complete_app):
     async with _make_client(app) as client:
         r = await client.get("/api/mgmt/sessions/does-not-exist")
     assert r.status_code == 404
+    body = r.json()
+    assert body["code"] == "not_found"
+    assert body["message"] == "Session not found"
+    assert body["request_id"].startswith("req_")
 
 
 # 31
@@ -549,6 +563,10 @@ async def test_unlock_wrong_passphrase_401(locked_app):
     async with _make_client(app) as client:
         r = await client.post("/api/mgmt/unlock", json={"passphrase": "wrong"})
     assert r.status_code == 401
+    body = r.json()
+    assert body["code"] == "auth_failed"
+    assert body["message"] == "Invalid passphrase"
+    assert body["request_id"].startswith("req_")
 
 
 # 33

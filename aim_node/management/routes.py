@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse
 
 from aim_node.core.crypto import DeviceCrypto
 from aim_node.management.config_writer import finalize_setup, read_config, write_config
+from aim_node.management.errors import ErrorCode, make_error
 from aim_node.management.schemas import (
     ConfigReadResponse,
     ConfigUpdateRequest,
@@ -112,7 +113,8 @@ async def setup_keypair(request: Request) -> JSONResponse:
     data_dir: Path = state._data_dir
     keystore_path = data_dir / "keystore.json"
     if keystore_path.exists():
-        return JSONResponse({"error": "Keypair already exists"}, status_code=409)
+        err = make_error(ErrorCode.ALREADY_EXISTS, "Keypair already exists")
+        return JSONResponse(err.model_dump(exclude_none=True), status_code=409)
 
     passphrase = body.passphrase or ""
     crypto = _crypto_for(data_dir, passphrase=passphrase)
@@ -260,8 +262,12 @@ async def config_update(request: Request) -> JSONResponse:
     effective_mode = config.get("management", {}).get("mode", "")
     effective_upstream = config.get("provider", {}).get("adapter", {}).get("endpoint_url")
     if effective_mode in ("provider", "both") and not effective_upstream:
+        err = make_error(
+            ErrorCode.CONFIG_INVALID,
+            "upstream_url required when mode includes provider",
+        )
         return JSONResponse(
-            {"error": "upstream_url required when mode includes provider"},
+            err.model_dump(exclude_none=True),
             status_code=422,
         )
 
@@ -352,7 +358,8 @@ async def session_detail(request: Request) -> JSONResponse:
     session_id = request.path_params.get("session_id", "")
     session = state.get_session(session_id)
     if session is None:
-        return JSONResponse({"error": "Session not found"}, status_code=404)
+        err = make_error(ErrorCode.NOT_FOUND, "Session not found")
+        return JSONResponse(err.model_dump(exclude_none=True), status_code=404)
     return JSONResponse(
         SessionDetailResponse(
             id=session["id"],
@@ -374,7 +381,8 @@ async def unlock(request: Request) -> JSONResponse:
     state = request.app.state.store
     ok = state.unlock(body.passphrase)
     if not ok:
-        return JSONResponse({"error": "Invalid passphrase"}, status_code=401)
+        err = make_error(ErrorCode.AUTH_FAILED, "Invalid passphrase")
+        return JSONResponse(err.model_dump(exclude_none=True), status_code=401)
 
     # Best-effort autostart after unlock
     process_mgr = request.app.state.process_mgr
@@ -394,7 +402,8 @@ async def keypair_info(request: Request) -> JSONResponse:
     data_dir: Path = state._data_dir
     keystore_path = data_dir / "keystore.json"
     if not keystore_path.exists():
-        return JSONResponse({"error": "Keystore not found"}, status_code=404)
+        err = make_error(ErrorCode.NOT_FOUND, "Keystore not found")
+        return JSONResponse(err.model_dump(exclude_none=True), status_code=404)
 
     passphrase = state.get_passphrase() or ""
     try:
@@ -411,7 +420,8 @@ async def keypair_info(request: Request) -> JSONResponse:
         if hex_pub:
             fingerprint = hashlib.sha256(bytes.fromhex(hex_pub)).hexdigest()
         else:
-            return JSONResponse({"error": "Keystore corrupted"}, status_code=500)
+            err = make_error(ErrorCode.INTERNAL_ERROR, "Keystore corrupted")
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
 
     mtime = keystore_path.stat().st_mtime
     created_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
