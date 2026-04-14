@@ -8,6 +8,7 @@
 **Estimated Hours:** 15
 **Depends On:** BQ-AIM-NODE-UI-SCAFFOLD (Gate 4 ✅), BQ-AIM-NODE-MGMT-API-V2 (Gate 4 ✅)
 **Author:** Vulcan (S438)
+**Revision:** R2 — addresses Gate 1 R1 mandates (MP): resume model, upstream API, allAI contract, hook schema
 
 ---
 
@@ -57,7 +58,12 @@ A `useSetupWizard` hook (or extend `useSetupStatus`) manages:
 - `stepData: Record<number, StepPayload>` — local form data per step
 - `stepStatus: Record<number, 'pending' | 'complete' | 'error'>` — completion state
 - Navigation: `next()`, `back()`, `goToStep(n)` — `back()` always allowed; `next()` requires current step complete
+- **Step persistence:** Each step completion must call the management API to persist progress via `mark_setup_step(n)`. Currently the backend only persists at steps 2 (keypair) and 5 (finalize); Gate 2 must extend this to persist all steps 0–4 so resume works at step granularity.
 - On page load: call `GET /setup/status` → resume at `current_step` (supports interrupted setups)
+
+### 3.2.1 Hook Schema Correction
+
+The existing `useSetupStatus` hook expects `{ complete: boolean, steps: Record<string, boolean> }`, but the actual backend response (`SetupStatusResponse` schema) returns `{ setup_complete: bool, locked: bool, unlocked: bool, current_step: int }`. The hook interface must be corrected to match the real schema before wizard implementation begins.
 
 ### 3.3 Step Flow
 
@@ -75,7 +81,7 @@ Each step is a self-contained form that calls one management API endpoint on sub
 | 0 | — | — | Passphrase stored locally for keypair generation (passed to Step 1) |
 | 1 | `/api/mgmt/setup/keypair` | POST | Generate Ed25519 keypair with passphrase |
 | 2 | `/api/mgmt/setup/test-connection` | POST | Validate ai.market API key |
-| 3 | `/api/mgmt/config` | PUT | Write upstream MCP URL to config |
+| 3 | `/api/mgmt/setup/test-upstream` | POST | Test upstream MCP endpoint reachability and discover tool count; on success, write URL to config |
 | 4 | `/api/mgmt/setup/finalize` | POST | Mark setup complete, start provider |
 | Unlock | `/api/mgmt/unlock` | POST | Decrypt keystore, resume operations |
 
@@ -87,7 +93,7 @@ The AllAIChat widget (already scaffolded) appears in the SetupLayout sidebar or 
 - Which steps are complete vs pending
 - Common setup issues (connection failures, passphrase requirements, upstream compatibility)
 
-This requires the allAI `/chat` endpoint to accept a `context` field (already designed in MGMT-API-V2 contracts) that the frontend populates with setup state.
+The allAI `/chat` endpoint builds context server-side via `_gather_context()`, which already gathers node status (including `setup_complete` and `current_step`), sessions, dashboard metrics, and discovered tools. The frontend does NOT send context — it only sends `message` and optional `conversation_id` per `AllAIChatRequest`. No contract change is needed; the existing server-side context assembly already includes setup state.
 
 **Scope boundary:** The allAI copilot intelligence (NLU, tool routing, multi-turn reasoning) is BQ-AIM-NODE-ALLAI-COPILOT scope. This BQ wires the widget to send setup context; responses use the existing basic chat relay.
 
