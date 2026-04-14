@@ -8,7 +8,7 @@
 **Estimated Hours:** 15
 **Depends On:** BQ-AIM-NODE-UI-SCAFFOLD (Gate 4 ✅), BQ-AIM-NODE-MGMT-API-V2 (Gate 4 ✅)
 **Author:** Vulcan (S438)
-**Revision:** R2 — addresses Gate 1 R1 mandates (MP): resume model, upstream API, allAI contract, hook schema
+**Revision:** R3 — addresses Gate 1 R1+R2 mandates (MP): resume model, upstream API, allAI contract, hook schema
 
 ---
 
@@ -93,7 +93,7 @@ The AllAIChat widget (already scaffolded) appears in the SetupLayout sidebar or 
 - Which steps are complete vs pending
 - Common setup issues (connection failures, passphrase requirements, upstream compatibility)
 
-The allAI `/chat` endpoint builds context server-side via `_gather_context()`, which already gathers node status (including `setup_complete` and `current_step`), sessions, dashboard metrics, and discovered tools. The frontend does NOT send context — it only sends `message` and optional `conversation_id` per `AllAIChatRequest`. No contract change is needed; the existing server-side context assembly already includes setup state.
+The allAI `/chat` endpoint builds context server-side via `_gather_context()`, which gathers node status, sessions, dashboard metrics, and discovered tools. The frontend does NOT send context — it only sends `message` and optional `conversation_id` per `AllAIChatRequest`. Note: `_safe_status_context()` currently forwards `healthy`, `setup_complete`, `locked`, `provider_running`, and `node_id` but does NOT include `current_step`. Gate 2 must extend `_safe_status_context()` to include `current_step` so the allAI copilot can provide step-aware guidance during setup.
 
 **Scope boundary:** The allAI copilot intelligence (NLU, tool routing, multi-turn reasoning) is BQ-AIM-NODE-ALLAI-COPILOT scope. This BQ wires the widget to send setup context; responses use the existing basic chat relay.
 
