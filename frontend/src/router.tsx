@@ -15,6 +15,9 @@ import { UnlockPlaceholder } from '@/pages/placeholders/UnlockPlaceholder';
 import { NotFound } from '@/pages/NotFound';
 import { WelcomeStep } from '@/pages/setup/WelcomeStep';
 import { KeypairStep } from '@/pages/setup/KeypairStep';
+import { ConnectionStep } from '@/pages/setup/ConnectionStep';
+import { UpstreamStep } from '@/pages/setup/UpstreamStep';
+import { ReviewStep } from '@/pages/setup/ReviewStep';
 
 export function RootRedirect() {
   const loading = useNodeStore((state) => state.loading);
@@ -43,6 +46,9 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/setup/welcome" replace /> },
       { path: 'welcome', element: <WelcomeStep /> },
       { path: 'keypair', element: <KeypairStep /> },
+      { path: 'connection', element: <ConnectionStep /> },
+      { path: 'upstream', element: <UpstreamStep /> },
+      { path: 'review', element: <ReviewStep /> },
       { path: 'unlock', element: <UnlockPlaceholder /> },
     ],
   },

@@ -15,6 +15,32 @@ export interface UseSetupWizard {
   passphrase: string;
   setPassphrase: (value: string) => void;
   clearPassphrase: () => void;
+  fingerprint: string;
+  setFingerprint: (value: string) => void;
+  apiUrl: string;
+  apiKey: string;
+  connectionReachable: boolean | null;
+  connectionVersion: string | null;
+  setConnection: (value: {
+    apiUrl?: string;
+    apiKey?: string;
+    reachable?: boolean | null;
+    version?: string | null;
+  }) => void;
+  upstreamUrl: string;
+  upstreamReachable: boolean | null;
+  toolsFound: number;
+  upstreamError: string | null;
+  upstreamSkipped: boolean;
+  setUpstream: (value: {
+    url?: string;
+    reachable?: boolean | null;
+    toolsFound?: number;
+    error?: string | null;
+    skipped?: boolean;
+  }) => void;
+  mode: 'provider' | 'consumer' | 'both';
+  setMode: (value: 'provider' | 'consumer' | 'both') => void;
 }
 
 const TOTAL_STEPS = 5;
@@ -47,6 +73,17 @@ function useSetupWizardState(initialPassphrase = ''): UseSetupWizard {
     buildInitialStepStatus(0, false),
   );
   const [passphrase, setPassphrase] = useState(initialPassphrase);
+  const [fingerprint, setFingerprint] = useState('');
+  const [apiUrl, setApiUrl] = useState('https://api.ai.market');
+  const [apiKey, setApiKey] = useState('');
+  const [connectionReachable, setConnectionReachable] = useState<boolean | null>(null);
+  const [connectionVersion, setConnectionVersion] = useState<string | null>(null);
+  const [upstreamUrl, setUpstreamUrl] = useState('');
+  const [upstreamReachable, setUpstreamReachable] = useState<boolean | null>(null);
+  const [toolsFound, setToolsFound] = useState(0);
+  const [upstreamError, setUpstreamError] = useState<string | null>(null);
+  const [upstreamSkipped, setUpstreamSkipped] = useState(false);
+  const [mode, setMode] = useState<'provider' | 'consumer' | 'both'>('consumer');
   const currentStepRef = useRef(currentStep);
   const stepStatusRef = useRef(stepStatus);
 
@@ -133,6 +170,32 @@ function useSetupWizardState(initialPassphrase = ''): UseSetupWizard {
     passphrase,
     setPassphrase,
     clearPassphrase: () => setPassphrase(''),
+    fingerprint,
+    setFingerprint,
+    apiUrl,
+    apiKey,
+    connectionReachable,
+    connectionVersion,
+    setConnection: ({ apiUrl, apiKey, reachable, version }) => {
+      if (apiUrl !== undefined) setApiUrl(apiUrl);
+      if (apiKey !== undefined) setApiKey(apiKey);
+      if (reachable !== undefined) setConnectionReachable(reachable);
+      if (version !== undefined) setConnectionVersion(version);
+    },
+    upstreamUrl,
+    upstreamReachable,
+    toolsFound,
+    upstreamError,
+    upstreamSkipped,
+    setUpstream: ({ url, reachable, toolsFound, error, skipped }) => {
+      if (url !== undefined) setUpstreamUrl(url);
+      if (reachable !== undefined) setUpstreamReachable(reachable);
+      if (toolsFound !== undefined) setToolsFound(toolsFound);
+      if (error !== undefined) setUpstreamError(error);
+      if (skipped !== undefined) setUpstreamSkipped(skipped);
+    },
+    mode,
+    setMode,
   };
 }
 

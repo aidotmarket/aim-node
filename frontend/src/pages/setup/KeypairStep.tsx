@@ -12,7 +12,7 @@ interface KeypairResponse {
 
 export function KeypairStep() {
   const navigate = useNavigate();
-  const { passphrase, clearPassphrase, markComplete, next, back } = useSetupWizard();
+  const { passphrase, clearPassphrase, markComplete, next, back, setFingerprint } = useSetupWizard();
   const [result, setResult] = useState<KeypairResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasExistingKeypair, setHasExistingKeypair] = useState(false);
@@ -30,6 +30,7 @@ export function KeypairStep() {
       const payload = passphrase ? { passphrase } : undefined;
       const response = await api.post<KeypairResponse>('/setup/keypair', payload);
       setResult(response);
+      setFingerprint(response.fingerprint);
       clearPassphrase();
       markComplete(1);
     } catch (caughtError) {
