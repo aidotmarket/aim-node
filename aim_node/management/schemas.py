@@ -79,6 +79,17 @@ class ConfigUpdateRequest(BaseModel):
     def _validate_upstream_url(cls, v: Optional[str]) -> Optional[str]:
         return _validate_http_url(v)
 
+
+class TestUpstreamRequest(BaseModel):
+    url: str
+    timeout_s: float = 10.0
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        return _validate_http_url(v)  # type: ignore[return-value]
+
+
 # ---------- Response Models ----------
 
 
@@ -189,6 +200,46 @@ class KeypairInfoResponse(BaseModel):
     fingerprint: str
     algorithm: str = "Ed25519"
     created_at: str
+
+
+class ToolSummary(BaseModel):
+    tool_id: str
+    name: str
+    version: str
+    description: str
+    validation_status: str
+    last_scanned_at: str
+
+
+class ToolListResponse(BaseModel):
+    tools: list[ToolSummary]
+    scanned_at: Optional[str] = None
+
+
+class ToolDetailResponse(BaseModel):
+    tool_id: str
+    name: str
+    version: str
+    description: str
+    input_schema: dict
+    output_schema: dict
+    validation_status: str
+    last_scanned_at: str
+    last_validated_at: Optional[str] = None
+
+
+class ToolValidationResponse(BaseModel):
+    tool_id: str
+    status: str
+    latency_ms: int
+    error: Optional[str] = None
+
+
+class TestUpstreamResponse(BaseModel):
+    reachable: bool
+    latency_ms: Optional[int] = None
+    tools_found: int = 0
+    error: Optional[str] = None
 
 
 ErrorResponse = NormalizedError  # backwards-compatible alias

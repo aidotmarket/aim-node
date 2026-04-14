@@ -16,3 +16,4 @@ class AIMCoreConfig:
     reconnect_jitter: float = 0.3
     api_key: str | None = None
     node_id: str | None = None
+    upstream_url: str | None = None

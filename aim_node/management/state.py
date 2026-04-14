@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -96,13 +97,17 @@ class ProcessStateStore:
             self._node_state = self._determine_node_state_internal()
             self._initialized = True
 
-    def _load_config(self) -> None:
-        """Read config.toml to determine setup_complete and mode."""
+    def _load_config(self):
+        """Read config.toml to determine setup_complete and mode.
+
+        Returns a parsed AIMCoreConfig when core/provider sections are valid,
+        otherwise returns None.
+        """
         config_path = self._data_dir / "config.toml"
         if not config_path.exists():
             self._setup_complete = False
             self._setup_step = 0
-            return
+            return None
 
         with open(config_path, "rb") as f:
             raw = tomli.load(f)
@@ -111,6 +116,12 @@ class ProcessStateStore:
         self._setup_complete = bool(mgmt.get("setup_complete", False))
         self._setup_step = int(mgmt.get("setup_step", 0))
         self._mode = mgmt.get("mode")
+        try:
+            from aim_node.config_loader import load_config
+
+            return load_config(raw)
+        except Exception:
+            return None
 
     def _check_keystore_locked(self) -> bool:
         """Check if keystore requires passphrase. Returns True if locked."""
@@ -254,3 +265,15 @@ class ProcessStateStore:
         with cls._lock:
             cls._instance = None
 
+
+def read_store(data_dir: Path, key: str) -> dict | None:
+    path = data_dir / "store" / f"{key}.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def write_store(data_dir: Path, key: str, data: dict) -> None:
+    store_dir = data_dir / "store"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    tmp = store_dir / f"{key}.json.tmp"
+    tmp.write_text(json.dumps(data, default=str))
+    tmp.rename(store_dir / f"{key}.json")

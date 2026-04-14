@@ -66,6 +66,13 @@ from aim_node.management.routes import (
     unlock,
 )
 from aim_node.management.state import ProcessStateStore
+from aim_node.management.tools import (
+    setup_test_upstream,
+    tools_detail,
+    tools_discover,
+    tools_list_local,
+    tools_validate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +97,11 @@ def _routes() -> list[Route]:
             setup_test_connection,
             methods=["POST"],
         ),
+        Route(
+            "/api/mgmt/setup/test-upstream",
+            setup_test_upstream,
+            methods=["POST"],
+        ),
         Route("/api/mgmt/setup/finalize", setup_finalize, methods=["POST"]),
         Route("/api/mgmt/status", dashboard, methods=["GET"]),
         Route("/api/mgmt/config", config_read, methods=["GET"]),
@@ -105,6 +117,14 @@ def _routes() -> list[Route]:
         ),
         Route("/api/mgmt/unlock", unlock, methods=["POST"]),
         Route("/api/mgmt/keypair", keypair_info, methods=["GET"]),
+        Route("/api/mgmt/tools", tools_list_local, methods=["GET"]),
+        Route("/api/mgmt/tools/discover", tools_discover, methods=["POST"]),
+        Route("/api/mgmt/tools/{tool_id}", tools_detail, methods=["GET"]),
+        Route(
+            "/api/mgmt/tools/{tool_id}/validate",
+            tools_validate,
+            methods=["POST"],
+        ),
         Route("/api/mgmt/marketplace/node", marketplace_node, methods=["GET"]),
         Route("/api/mgmt/marketplace/tools", tools_list, methods=["GET"]),
         Route(

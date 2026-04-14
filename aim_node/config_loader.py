@@ -88,6 +88,10 @@ def load_config(raw: dict) -> AIMCoreConfig:
         ),
         api_key=_optional_str(core.get("api_key", raw.get("api_key")), "core.api_key"),
         node_id=_optional_str(core.get("node_id", raw.get("node_id")), "core.node_id"),
+        upstream_url=_optional_str(
+            _get_section(_get_section(raw, "provider"), "adapter").get("endpoint_url"),
+            "provider.adapter.endpoint_url",
+        ),
     )
 
 
