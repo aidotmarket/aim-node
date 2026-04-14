@@ -204,3 +204,84 @@ Three collapsible panels stacked vertically within the tool detail page:
 - [ ] All tests pass (target: 35+)
 - [ ] No TypeScript errors, no ESLint warnings
 - [ ] Placeholder pages removed for tool routes
+
+---
+
+## R2 Addendum — Gate 1 R1 REJECT Resolution (S439)
+
+**R1 Findings from MP (S438):**
+1. CRITICAL: Marketplace facade endpoints don't exist in aim-node
+2. MAJOR: Backend dependency deferred
+3. MAJOR: Tools schema lacks marketplace linkage
+4. MAJOR: node_id vs node_serial registration gap
+
+### Finding 1 Resolution: Facade Endpoints DO Exist
+
+The R1 review found that the facade endpoints in Section 3.3 don't exist. The endpoints DO exist but were listed with wrong paths/methods. Here are the **actual routes** from `aim_node/management/app.py` and `aim_node/management/marketplace.py` (verified at commit 7728945):
+
+**Local Tool Management (already existed pre-BQ):**
+
+| Method | Path | Handler | Purpose |
+|--------|------|---------|---------|
+| GET | `/api/mgmt/tools` | `tools_list_local` | List locally discovered tools |
+| POST | `/api/mgmt/tools/discover` | `tools_discover` | Scan upstream MCP for tools |
+| GET | `/api/mgmt/tools/{tool_id}` | `tool_detail` | Get tool detail + schema |
+| POST | `/api/mgmt/tools/{tool_id}/validate` | `tools_validate` | Validate tool works |
+
+**Marketplace Facade (proxies to api.ai.market via MarketplaceFacade):**
+
+| Method | Path | Backend Route | Purpose |
+|--------|------|---------------|---------|
+| GET | `/api/mgmt/marketplace/node` | `/aim/nodes/mine` | Node's marketplace profile |
+| GET | `/api/mgmt/marketplace/tools` | `/aim/nodes/{node_id}/tools` | Marketplace-registered tools |
+| POST | `/api/mgmt/marketplace/tools/publish` | `/aim/nodes/{node_id}/tools/publish` | Publish tool(s) to marketplace |
+| PUT | `/api/mgmt/marketplace/tools/{tool_id}` | `/aim/nodes/{node_id}/tools/{tool_id}` | Update tool metadata/pricing |
+| DELETE | `/api/mgmt/marketplace/tools/{tool_id}` | `/aim/nodes/{node_id}/tools/{tool_id}` | Remove tool from marketplace |
+| GET | `/api/mgmt/marketplace/listings` | `/listings` | Node's marketplace listings |
+| POST | `/api/mgmt/marketplace/discover` | `/aim/discover/search` | Search marketplace |
+
+**Section 3.3 in the original spec is REPLACED by the table above.** The original assumed listing-centric CRUD (`/marketplace/listings`, `/marketplace/listings/{id}/publish`). The actual flow is tool-centric: publish tools directly, not create listings as a separate step.
+
+### Finding 2 Resolution: Backend Dependency Complete
+
+BQ-AIM-BACKEND-SELLER-APIS completed Gate 4 in S437. The backend endpoints at `api.ai.market` that the facade proxies to are live and verified. No deferred dependency.
+
+### Finding 3 Resolution: Tool → Marketplace Linkage
+
+The linkage exists through two parallel endpoints:
+- **Local tools:** `GET /api/mgmt/tools` returns `ToolListResponse` → `ToolSummary` objects with `tool_id`, `name`, `version`, `validation_status`
+- **Marketplace tools:** `GET /api/mgmt/marketplace/tools` returns the marketplace-side view with publish status, pricing, listing metadata
+
+The frontend joins these by `tool_id` — local tools show local state (schema, validation), marketplace tools show publish state (live/draft/unpublished, pricing). The ToolsListPage merges both views.
+
+### Finding 4 Resolution: node_id vs node_serial
+
+- `node_serial` is the local UUID generated during setup (stored in `config.toml` under `core.node_serial`)
+- `node_id` is the backend-assigned UUID returned when the node first authenticates with api.ai.market
+- The `MarketplaceFacade` requires `node_id` to be set in config (see `facade.py` line ~42: raises if `config.node_id` is None)
+- Node registration happens implicitly during the first authenticated API call after setup finalize — the facade's `AuthService` handles this
+- No explicit `/register` endpoint is needed in the frontend flow
+
+### Revised Architecture: Publish Flow
+
+The publish flow is simpler than originally spec'd:
+
+1. **Discover:** User clicks "Discover Tools" → `POST /api/mgmt/tools/discover` → upstream scan populates local tool list
+2. **Validate:** User selects a tool → `POST /api/mgmt/tools/{tool_id}/validate` → confirms tool responds correctly
+3. **Publish:** User clicks "Publish" on a validated tool → fills in metadata (description, tags, pricing) → `POST /api/mgmt/marketplace/tools/publish` with tool details
+4. **Update:** User can update pricing/metadata → `PUT /api/mgmt/marketplace/tools/{tool_id}`
+5. **Unpublish:** User clicks "Remove" → `DELETE /api/mgmt/marketplace/tools/{tool_id}`
+
+There is no separate "create listing" → "set pricing" → "go live" multi-step. Publishing is a single action with metadata attached. The allAI copilot can help generate descriptions and suggest pricing during step 3.
+
+### Updated User Stories
+
+Replace SP-5 through SP-8 with:
+
+| ID | Story | Acceptance |
+|----|-------|------------|
+| SP-5 | As a seller, I can publish a validated tool to the marketplace | Publish form: description, tags, pricing (per-call USD) → calls `POST /api/mgmt/marketplace/tools/publish` → tool appears in marketplace |
+| SP-6 | As a seller, I can update a published tool's metadata or pricing | Edit form pre-filled from `GET /api/mgmt/marketplace/tools` → saves via `PUT /api/mgmt/marketplace/tools/{tool_id}` |
+| SP-7 | As a seller, I can remove a tool from the marketplace | "Remove" button + confirmation → `DELETE /api/mgmt/marketplace/tools/{tool_id}` |
+
+SP-1 through SP-4 and SP-9 remain unchanged.
