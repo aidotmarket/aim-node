@@ -82,13 +82,41 @@ def setup_complete_app(tmp_path: Path):
 
 async def test_allai_chat_injects_context_redacts_and_forwards_to_facade(setup_complete_app):
     app, state, _ = setup_complete_app
+    write_config(
+        state._data_dir,
+        {
+            "core": {
+                "node_serial": "node-test-123",
+                "node_id": "node-backend-123",
+                "keystore_path": str(state._data_dir / "keystore.json"),
+                "data_dir": str(state._data_dir),
+                "market_api_url": "https://api.example.test",
+                "api_key": "secret-api-key",
+            },
+            "management": {
+                "setup_complete": True,
+                "setup_step": 5,
+                "mode": "consumer",
+            },
+            "allai": {
+                "allowed_tools": [
+                    "inspect_local_config",
+                    "tail_recent_logs",
+                ]
+            },
+        },
+    )
     write_store(
         state._data_dir,
         "discovered_tools",
         {
             "tools": [
                 {
+                    "tool_id": "tool-1",
                     "name": "inspect",
+                    "description": "Inspect the local node",
+                    "version": "1.0.0",
+                    "validation_status": "ok",
                     "api_key": "should-not-leak",
                     "session_token": "secret-token",
                 }
@@ -117,13 +145,53 @@ async def test_allai_chat_injects_context_redacts_and_forwards_to_facade(setup_c
     assert facade.post.await_args.args == ("/allie/chat/agentic",)
     assert payload["message"] == "status?"
     assert payload["node_id"] == "node-backend-123"
-    assert payload["allowed_tools"]
-    assert payload["context"]["status"]["node_state"] == state.get_status()["node_state"]
-    assert payload["context"]["discovered_tools"]["csrf_token"] == "[redacted]"
-    assert payload["context"]["discovered_tools"]["tools"][0]["api_key"] == "[redacted]"
-    assert payload["context"]["discovered_tools"]["tools"][0]["session_token"] == "[redacted]"
+    assert payload["allowed_tools"] == ["inspect_local_config", "tail_recent_logs"]
+    assert payload["context"]["status"]["healthy"] is True
+    assert payload["context"]["status"]["setup_complete"] == state.get_status()["setup_complete"]
+    assert payload["context"]["status"]["locked"] == state.get_status()["locked"]
+    assert payload["context"]["status"]["provider_running"] == state.get_dashboard()["provider_running"]
+    assert payload["context"]["status"]["node_id"] == "node-backend-123"
+    assert payload["context"]["dashboard"]["active_sessions"] == 0
+    assert payload["context"]["dashboard"]["tools_registered"] == 1
+    assert payload["context"]["discovered_tools"] == [
+        {
+            "tool_name": "inspect",
+            "description": "Inspect the local node",
+            "version": "1.0.0",
+            "status": "ok",
+        }
+    ]
     assert "degraded_context" not in payload
     assert r.json()["conversation_id"] == "conv-1"
+
+
+async def test_allai_chat_uses_default_allowed_tools_when_config_not_set(setup_complete_app):
+    app, _, _ = setup_complete_app
+    facade = MagicMock()
+    facade.node_id = "node-backend-123"
+    facade.post = AsyncMock(
+        return_value={
+            "reply": "hello",
+            "conversation_id": "conv-default",
+            "proposed_actions": None,
+            "suggestions": None,
+        }
+    )
+    app.state.facade = facade
+
+    async with _make_client(app) as client:
+        r = await client.post("/allai/chat", json={"message": "status?"})
+
+    assert r.status_code == 200
+    payload = facade.post.await_args.kwargs["json_body"]
+    assert payload["allowed_tools"] == [
+        "inspect_local_config",
+        "test_market_auth",
+        "scan_provider_endpoint",
+        "list_local_tools",
+        "tail_recent_logs",
+        "explain_last_failure",
+    ]
 
 
 async def test_allai_chat_sets_degraded_context_when_store_lookup_fails(setup_complete_app, monkeypatch):
@@ -223,7 +291,8 @@ async def test_allai_chat_auto_executes_allowed_actions(setup_complete_app):
     assert "Local action results:" in body["reply"]
     second_payload = facade.post.await_args_list[1].kwargs["json_body"]
     assert second_payload["tool_results"][0]["action_id"] == "act-auto"
-    assert second_payload["tool_results"][0]["result"]["config"]["core"]["api_key"] == "[redacted]"
+    assert second_payload["tool_results"][0]["result"]["config"]["core"]["node_id"] == "node-backend-123"
+    assert "api_key" not in second_payload["tool_results"][0]["result"]["config"]["core"]
     assert state._data_dir.exists()
 
 
@@ -246,7 +315,8 @@ async def test_allai_confirm_approve_executes_cached_action(setup_complete_app):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "executed"
-    assert body["result"]["config"]["core"]["api_key"] == "[redacted]"
+    assert body["result"]["config"]["core"]["node_id"] == "node-backend-123"
+    assert "api_key" not in body["result"]["config"]["core"]
     assert "act-approve" not in app.state.allai_action_cache
 
 
@@ -282,3 +352,44 @@ async def test_allai_confirm_unknown_action_returns_404(setup_complete_app):
 
     assert r.status_code == 404
     assert r.json()["code"] == "not_found"
+
+
+async def test_allai_confirm_rejects_disallowed_tool_with_normalized_error(setup_complete_app):
+    app, state, _ = setup_complete_app
+    write_config(
+        state._data_dir,
+        {
+            "core": {
+                "node_serial": "node-test-123",
+                "node_id": "node-backend-123",
+                "keystore_path": str(state._data_dir / "keystore.json"),
+                "data_dir": str(state._data_dir),
+                "market_api_url": "https://api.example.test",
+                "api_key": "secret-api-key",
+            },
+            "management": {
+                "setup_complete": True,
+                "setup_step": 5,
+                "mode": "consumer",
+            },
+            "allai": {
+                "allowed_tools": ["tail_recent_logs"]
+            },
+        },
+    )
+    app.state.allai_action_cache["act-forbidden"] = ProposedAction(
+        action_id="act-forbidden",
+        description="Inspect config",
+        tool_name="inspect_local_config",
+        params={},
+        requires_confirmation=True,
+    )
+
+    async with _make_client(app) as client:
+        r = await client.post(
+            "/allai/confirm",
+            json={"action_id": "act-forbidden", "approved": True},
+        )
+
+    assert r.status_code == 403
+    assert r.json()["code"] == "forbidden"
