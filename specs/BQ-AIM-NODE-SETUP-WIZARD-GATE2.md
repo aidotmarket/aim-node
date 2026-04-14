@@ -15,7 +15,7 @@
 |---|----------|---------|------------|
 | 1 | CRITICAL | API contracts don't match schemas.py | All request/response types copy-pasted from schemas.py. Every Slice B/C section updated. |
 | 2 | HIGH | `mark_setup_step()` in-memory only, `config_writer.write_setup_step()` missing | Added `persist_setup_step()` to config_writer.py (Slice A). Routes call both `state.mark_setup_step(N)` and `persist_setup_step(data_dir, N)`. |
-| 3 | HIGH | AllAIChat not in SetupLayout, placeholder with no transport | AllAIChat mounted in SetupLayout (Slice A). Basic transport wired in Slice D with `/api/mgmt/allai/chat` endpoint. |
+| 3 | HIGH | AllAIChat not in SetupLayout, placeholder with no transport | AllAIChat mounted in SetupLayout (Slice A). Basic transport wired in Slice D with `/allai/chat` endpoint. |
 | 4 | MEDIUM | Slice B router imports Slice C pages | Router updates split per-slice. Each slice adds only its own page routes via lazy imports with fallback placeholders. |
 | 5 | MEDIUM | `brand-primary`/`brand-success` tokens don't match existing primitives | All references updated to actual tokens: `brand-indigo`, `brand-teal`, `brand-success`, `brand-error`. Border uses `border-[#E8E8E8]`. |
 
@@ -416,28 +416,28 @@ The AllAIChat component (already mounted in SetupLayout from Slice A) gets basic
 
 ```typescript
 // AllAIChat.tsx — replace disabled placeholder
-// Transport: POST /api/mgmt/allai/chat with { message: string }
+// Transport: POST /allai/chat with { message: string }
 // Response: { reply: string } (streamed or single response)
 ```
 
 Implementation:
 - Remove `disabled` from Input and Button
 - Replace `EmptyState` with a messages list (`useState<Message[]>`)
-- `onSubmit`: POST to `/api/mgmt/allai/chat`, append response to messages
+- `onSubmit`: POST to `/allai/chat`, append response to messages
 - No streaming required in this BQ — simple request/response is sufficient
 - Error handling: show error badge inline, allow retry
 
-The allAI backend already has `_safe_status_context()` which includes `setup_complete`, `setup_step`, and `mode`. Slice D extends this to also include `current_step`:
+The allAI backend has `_safe_status_context()` which currently picks `healthy`, `setup_complete`, `locked`, `provider_running`, and `node_id`. Slice D extends this to also include `current_step` and `mode`:
 
 ```python
 # aim_node/management/allai.py — _safe_status_context() pick list
-# Current:
-("setup_complete", "setup_step", "mode")
-# Updated:
-("setup_complete", "setup_step", "mode", "current_step")
+# Current pick list (from allai.py @ 1133865):
+("healthy", "setup_complete", "locked", "provider_running", "node_id")
+# Updated (add current_step and mode):
+("healthy", "setup_complete", "locked", "provider_running", "node_id", "current_step", "mode")
 ```
 
-Note: `setup_step` and `current_step` are the same field in `get_status()`. The allai.py picks from the status dict which uses `current_step` as the key. Verify the actual pick key matches.
+Note: `get_status()` returns `current_step` (which maps to the internal `_setup_step` field). The pick key must be `current_step` to match the status dict key.
 
 ### D.3 Router Addition (Slice D only)
 
@@ -460,7 +460,7 @@ Full wizard flow tests with mocked API:
 
 - `UnlockPage`: renders form, calls `/api/mgmt/unlock` with `{passphrase}`, success redirect on `{unlocked: true}`, error retry (3–4 tests)
 - allAI context: verify `current_step` is included in `_safe_status_context()` output (1 backend unit test)
-- allAI chat: sends message to `/api/mgmt/allai/chat`, displays reply, error handling (2 tests)
+- allAI chat: sends message to `/allai/chat`, displays reply, error handling (2 tests)
 - Integration: happy path, resume, error recovery, unlock, skip upstream (4–5 tests — can be combined)
 
 ---
@@ -481,7 +481,7 @@ Full wizard flow tests with mocked API:
 - `frontend/src/hooks/useSetupStatus.ts` — fix interface to match `SetupStatusResponse`
 - `frontend/src/router.tsx` — add step routes incrementally per slice (A: parent + index, B: welcome + keypair, C: connection + upstream + review, D: unlock)
 - `frontend/src/layouts/SetupLayout.tsx` — widen to `max-w-2xl`, add `StepIndicator`, mount `AllAIChat`
-- `frontend/src/components/AllAIChat.tsx` — wire basic transport to `/api/mgmt/allai/chat` (Slice D)
+- `frontend/src/components/AllAIChat.tsx` — wire basic transport to `/allai/chat` (Slice D)
 
 ### Modified files (backend)
 - `aim_node/management/config_writer.py` — add `persist_setup_step()` function
