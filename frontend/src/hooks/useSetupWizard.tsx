@@ -68,6 +68,7 @@ function buildInitialStepStatus(currentStep: number, setupComplete: boolean) {
 
 function useSetupWizardState(initialPassphrase = ''): UseSetupWizard {
   const { data, isLoading, error } = useSetupStatus();
+  const [hasSyncedStatus, setHasSyncedStatus] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [stepStatus, setStepStatus] = useState<Record<number, SetupWizardStepStatus>>(
     buildInitialStepStatus(0, false),
@@ -96,12 +97,18 @@ function useSetupWizardState(initialPassphrase = ''): UseSetupWizard {
   }, [stepStatus]);
 
   useEffect(() => {
-    if (!data) return;
+    if (!data) {
+      if (error) {
+        setHasSyncedStatus(true);
+      }
+      return;
+    }
 
     const nextCurrentStep = clampStep(data.current_step);
     setCurrentStep(nextCurrentStep);
     setStepStatus(buildInitialStepStatus(nextCurrentStep, data.current_step >= TOTAL_STEPS));
-  }, [data]);
+    setHasSyncedStatus(true);
+  }, [data, error]);
 
   const message = useMemo(() => {
     if (!error) return null;
@@ -161,7 +168,7 @@ function useSetupWizardState(initialPassphrase = ''): UseSetupWizard {
   return {
     currentStep,
     stepStatus,
-    isLoading,
+    isLoading: isLoading || !hasSyncedStatus,
     error: message,
     next,
     back,

@@ -19,6 +19,7 @@ export function ReviewStep() {
     upstreamUrl,
     toolsFound,
     upstreamReachable,
+    upstreamSkipped,
     mode,
     setMode,
   } = useSetupWizard();
@@ -39,7 +40,7 @@ export function ReviewStep() {
         mode,
         api_url: apiUrl,
         api_key: apiKey,
-        upstream_url: upstreamUrl.trim() || undefined,
+        upstream_url: upstreamSkipped ? undefined : upstreamUrl.trim() || undefined,
       });
 
       if (response.ok) {

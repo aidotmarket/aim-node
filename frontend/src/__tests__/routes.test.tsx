@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { createMemoryRouter, Navigate, RouterProvider } from 'react-router-dom';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -13,8 +13,9 @@ import { SessionsPlaceholder } from '@/pages/placeholders/SessionsPlaceholder';
 import { SessionDetailPlaceholder } from '@/pages/placeholders/SessionDetailPlaceholder';
 import { LogsPlaceholder } from '@/pages/placeholders/LogsPlaceholder';
 import { SettingsPlaceholder } from '@/pages/placeholders/SettingsPlaceholder';
-import { UnlockPlaceholder } from '@/pages/placeholders/UnlockPlaceholder';
 import { NotFound } from '@/pages/NotFound';
+import { SetupIndexRedirect } from '@/router';
+import { UnlockPage } from '@/pages/setup/UnlockPage';
 
 const originalFetch = globalThis.fetch;
 const mockFetch = vi.fn();
@@ -48,9 +49,9 @@ const routes = [
     path: '/setup',
     element: <SetupLayout />,
     children: [
-      { index: true, element: <Navigate to="/setup/welcome" replace /> },
+      { index: true, element: <SetupIndexRedirect /> },
       { path: 'welcome', element: <div>Setup Welcome</div> },
-      { path: 'unlock', element: <UnlockPlaceholder /> },
+      { path: 'unlock', element: <UnlockPage /> },
     ],
   },
   {
@@ -144,7 +145,7 @@ describe('Route rendering', () => {
 
   it('renders unlock page', async () => {
     renderRoute('/setup/unlock');
-    await waitFor(() => expect(screen.getByText('Unlock Node')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Unlock your node')).toBeInTheDocument());
   });
 
   it('renders not found for unknown routes', async () => {

@@ -109,7 +109,15 @@ def _pick_dict_fields(source: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 def _safe_status_context(status: Any, request: Request) -> dict[str, Any]:
     safe = _pick_dict_fields(
         status,
-        ("healthy", "setup_complete", "locked", "provider_running", "node_id"),
+        (
+            "healthy",
+            "setup_complete",
+            "locked",
+            "provider_running",
+            "node_id",
+            "current_step",
+            "mode",
+        ),
     )
     if "healthy" not in safe:
         safe["healthy"] = True
