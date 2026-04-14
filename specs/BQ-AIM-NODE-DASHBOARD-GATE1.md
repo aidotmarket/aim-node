@@ -39,14 +39,14 @@ class DashboardResponse(BaseModel):
     consumer_running: bool
     # new
     adapter_healthy: bool = False       # from provider_health: upstream_reachable
-    marketplace_registered: bool = False # from facade is not None (node_id exists)
+    marketplace_registered: bool = False # from facade.get("/aim/nodes/mine") success, not mere facade existence
     published_tool_count: int = 0       # from facade.get("/aim/nodes/{id}/tools") count, or 0 if facade unavailable
     active_session_count: int = 0       # from len(state.get_sessions()) filtered by state != "closed"
 ```
 
 In the `dashboard()` route handler:
 - `adapter_healthy`: call `provider_health` logic (or reuse the adapter's `_healthy` flag via state store) — maps to `upstream_reachable` from `ProviderHealthResponse`
-- `marketplace_registered`: `request.app.state.facade is not None`
+- `marketplace_registered`: attempt `facade.get("/aim/nodes/mine")` — True if 200, False if facade is None or request fails. This checks actual backend registration, not just proxy configuration.
 - `published_tool_count`: wrap `facade.get(...)` in try/except, count results, default 0 if facade unavailable
 - `active_session_count`: `len([s for s in state.get_sessions() if s.get("state") != "closed"])`
 
@@ -104,7 +104,7 @@ Line chart showing calls and errors over time.
 
 **Left — Active Sessions** (compact list):
 - Render all sessions from `GET /api/mgmt/sessions`, client-side filter to exclude `state === "closed"`, client-side slice to show max 5
-- Each row: session_id (truncated), role badge, state badge, peer fingerprint (truncated), bytes transferred (humanized)
+- Each row: id (truncated), role badge, state badge, peer fingerprint (truncated), bytes transferred (humanized)
 - "View All →" link to `/sessions`
 - **Empty state**: "No active sessions."
 
