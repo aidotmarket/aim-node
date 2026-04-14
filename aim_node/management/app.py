@@ -10,11 +10,13 @@ from pathlib import Path
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
+from aim_node.management.allai import allai_chat, allai_confirm
 from aim_node.management.config_writer import read_config
 from aim_node.management.errors import (
     ErrorCode,
@@ -196,7 +198,35 @@ def _routes() -> list[Route]:
         Route("/api/mgmt/marketplace/traces", traces, methods=["GET"]),
         Route("/api/mgmt/marketplace/listings", listings, methods=["GET"]),
         Route("/api/mgmt/marketplace/discover", discover, methods=["POST"]),
+        Route("/allai/chat", allai_chat, methods=["POST"]),
+        Route("/allai/confirm", allai_confirm, methods=["POST"]),
     ]
+
+
+class StaticCacheControlMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        if request.url.path.startswith("/assets/") and response.status_code < 400:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+def _spa_fallback_handler(data_dir: Path):
+    frontend_dir = Path(data_dir) / "frontend" / "dist"
+    index_path = frontend_dir / "index.html"
+
+    async def spa_fallback(request: Request) -> Response:
+        path = request.url.path
+        if path.startswith("/api/") or path.startswith("/assets/"):
+            raise HTTPException(404, "Not found")
+        if not index_path.exists():
+            raise HTTPException(404, "UI not built")
+        return HTMLResponse(
+            index_path.read_text(),
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    return spa_fallback
 
 
 async def _precondition_handler(request: Request, exc: PreconditionError) -> JSONResponse:
@@ -294,6 +324,7 @@ def create_management_app(
         app.state.process_mgr = process_mgr
         app.state.remote_bind = remote_bind
         app.state.session_token = None
+        app.state.allai_action_cache = {}
         app.state.log_handler = log_handler
         app.state.metrics = metrics
         try:
@@ -324,10 +355,12 @@ def create_management_app(
 
     routes: list = list(_routes())
 
-    # Static files placeholder (Slice 3 fills this in)
-    frontend_dir = data_dir / "frontend"
+    frontend_dir = data_dir / "frontend" / "dist"
     if frontend_dir.exists():
-        routes.append(Mount("/static", app=StaticFiles(directory=str(frontend_dir))))
+        routes.append(
+            Mount("/assets", app=StaticFiles(directory=str(frontend_dir / "assets")))
+        )
+    routes.append(Route("/{path:path}", _spa_fallback_handler(data_dir), methods=["GET"]))
 
     exception_handlers = {
         PreconditionError: _precondition_handler,
@@ -350,8 +383,10 @@ def create_management_app(
     app.state.remote_bind = remote_bind
     app.state.session_token = None
     app.state.facade = None
+    app.state.allai_action_cache = {}
     app.state.log_handler = log_handler
     app.state.metrics = metrics
     app.add_middleware(CSRFMiddleware)
     app.add_middleware(MetricsMiddleware)
+    app.add_middleware(StaticCacheControlMiddleware)
     return app

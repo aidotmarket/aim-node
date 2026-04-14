@@ -153,6 +153,14 @@ def _patch_httpx(monkeypatch, *, status_code=200, json_data=None, raise_exc=None
     monkeypatch.setattr("aim_node.management.routes._AsyncClient", _factory)
 
 
+def _write_frontend_build(data_dir: Path) -> None:
+    dist_dir = data_dir / "frontend" / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "index.html").write_text("<!doctype html><div id='root'>ui</div>")
+    (assets_dir / "app.123.js").write_text("console.log('ok');")
+
+
 # ---------- Tests ----------
 
 
@@ -847,3 +855,63 @@ async def test_config_read_after_mode_change(setup_complete_app):
     assert r2.status_code == 200
     body = r2.json()
     assert body["mode"] == "consumer"
+
+
+# 38
+async def test_static_assets_served_from_frontend_dist(tmp_data_dir):
+    _write_frontend_build(tmp_data_dir)
+    app, *_ = _build_app(tmp_data_dir)
+
+    async with _make_client(app) as client:
+        r = await client.get("/assets/app.123.js")
+
+    assert r.status_code == 200
+    assert r.text == "console.log('ok');"
+
+
+# 39
+async def test_static_assets_have_immutable_cache_header(tmp_data_dir):
+    _write_frontend_build(tmp_data_dir)
+    app, *_ = _build_app(tmp_data_dir)
+
+    async with _make_client(app) as client:
+        r = await client.get("/assets/app.123.js")
+
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+# 40
+async def test_spa_fallback_serves_index_for_dashboard_route(tmp_data_dir):
+    _write_frontend_build(tmp_data_dir)
+    app, *_ = _build_app(tmp_data_dir)
+
+    async with _make_client(app) as client:
+        r = await client.get("/dashboard")
+
+    assert r.status_code == 200
+    assert "ui" in r.text
+    assert r.headers["cache-control"] == "no-cache"
+
+
+# 41
+async def test_spa_fallback_serves_index_for_settings_route(tmp_data_dir):
+    _write_frontend_build(tmp_data_dir)
+    app, *_ = _build_app(tmp_data_dir)
+
+    async with _make_client(app) as client:
+        r = await client.get("/settings")
+
+    assert r.status_code == 200
+    assert "<div id='root'>ui</div>" in r.text
+
+
+# 42
+async def test_spa_fallback_returns_404_without_frontend_build(fresh_app):
+    app, *_ = fresh_app
+
+    async with _make_client(app) as client:
+        r = await client.get("/dashboard")
+
+    assert r.status_code == 404
+    assert r.json()["message"] == "UI not built"
