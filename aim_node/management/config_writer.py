@@ -117,3 +117,11 @@ def finalize_setup(
 
     write_config(data_dir, config)
 
+
+def persist_setup_step(data_dir: Path, step: int) -> None:
+    """Persist an intermediate setup step to config.toml."""
+    config = read_config(data_dir)
+    if "management" not in config:
+        config["management"] = {}
+    config["management"]["setup_step"] = step
+    write_config(data_dir, config)

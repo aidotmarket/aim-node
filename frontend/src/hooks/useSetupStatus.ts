@@ -1,9 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-interface SetupStatusResponse {
-  complete: boolean;
-  steps: Record<string, boolean>;
+export interface SetupStatusResponse {
+  setup_complete: boolean;
+  locked: boolean;
+  unlocked: boolean;
+  current_step: number;
 }
 
 export function useSetupStatus() {

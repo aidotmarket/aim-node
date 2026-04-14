@@ -20,7 +20,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from aim_node.core.crypto import DeviceCrypto
-from aim_node.management.config_writer import finalize_setup, read_config, write_config
+from aim_node.management.config_writer import (
+    finalize_setup,
+    persist_setup_step,
+    read_config,
+    write_config,
+)
 from aim_node.management.errors import ErrorCode, make_error
 from aim_node.management.schemas import (
     ConfigReadResponse,
@@ -133,6 +138,7 @@ async def setup_keypair(request: Request) -> JSONResponse:
     _, ed_pub, _, _ = crypto.get_or_create_keypairs()
     fingerprint = _fingerprint_from_ed_pub(ed_pub)
     state.mark_setup_step(2)
+    persist_setup_step(state._data_dir, 2)
     return JSONResponse(
         KeypairResponse(fingerprint=fingerprint, created=True).model_dump()
     )
@@ -158,6 +164,10 @@ async def setup_test_connection(request: Request) -> JSONResponse:
                     version = None
     except Exception:
         reachable = False
+    if reachable:
+        state = request.app.state.store
+        state.mark_setup_step(3)
+        persist_setup_step(state._data_dir, 3)
     return JSONResponse(
         TestConnectionResponse(reachable=reachable, version=version).model_dump()
     )

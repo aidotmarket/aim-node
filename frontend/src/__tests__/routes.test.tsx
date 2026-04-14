@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import { describe, it, expect } from 'vitest';
+import { createMemoryRouter, Navigate, RouterProvider } from 'react-router-dom';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { AppLayout } from '@/layouts/AppLayout';
@@ -13,16 +13,43 @@ import { SessionsPlaceholder } from '@/pages/placeholders/SessionsPlaceholder';
 import { SessionDetailPlaceholder } from '@/pages/placeholders/SessionDetailPlaceholder';
 import { LogsPlaceholder } from '@/pages/placeholders/LogsPlaceholder';
 import { SettingsPlaceholder } from '@/pages/placeholders/SettingsPlaceholder';
-import { SetupPlaceholder } from '@/pages/placeholders/SetupPlaceholder';
 import { UnlockPlaceholder } from '@/pages/placeholders/UnlockPlaceholder';
 import { NotFound } from '@/pages/NotFound';
+
+const originalFetch = globalThis.fetch;
+const mockFetch = vi.fn();
+
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+beforeEach(() => {
+  globalThis.fetch = mockFetch;
+  mockFetch.mockResolvedValue(
+    jsonResponse({
+      setup_complete: false,
+      locked: false,
+      unlocked: true,
+      current_step: 0,
+    }),
+  );
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  mockFetch.mockReset();
+});
 
 const routes = [
   {
     path: '/setup',
     element: <SetupLayout />,
     children: [
-      { index: true, element: <SetupPlaceholder /> },
+      { index: true, element: <Navigate to="/setup/welcome" replace /> },
+      { path: 'welcome', element: <div>Setup Welcome</div> },
       { path: 'unlock', element: <UnlockPlaceholder /> },
     ],
   },
@@ -112,7 +139,7 @@ describe('Route rendering', () => {
 
   it('renders setup page', async () => {
     renderRoute('/setup');
-    await waitFor(() => expect(screen.getByText('Setup Wizard')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Setup Welcome')).toBeInTheDocument());
   });
 
   it('renders unlock page', async () => {

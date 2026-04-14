@@ -11,7 +11,6 @@ import { SessionsPlaceholder } from '@/pages/placeholders/SessionsPlaceholder';
 import { SessionDetailPlaceholder } from '@/pages/placeholders/SessionDetailPlaceholder';
 import { LogsPlaceholder } from '@/pages/placeholders/LogsPlaceholder';
 import { SettingsPlaceholder } from '@/pages/placeholders/SettingsPlaceholder';
-import { SetupPlaceholder } from '@/pages/placeholders/SetupPlaceholder';
 import { UnlockPlaceholder } from '@/pages/placeholders/UnlockPlaceholder';
 import { NotFound } from '@/pages/NotFound';
 
@@ -39,7 +38,7 @@ export const router = createBrowserRouter([
     path: '/setup',
     element: <SetupLayout />,
     children: [
-      { index: true, element: <SetupPlaceholder /> },
+      { index: true, element: <Navigate to="/setup/welcome" replace /> },
       { path: 'unlock', element: <UnlockPlaceholder /> },
     ],
   },
