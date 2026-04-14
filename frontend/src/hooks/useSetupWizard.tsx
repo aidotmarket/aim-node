@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useSetupStatus } from '@/hooks/useSetupStatus';
 
 export type SetupWizardStepStatus = 'pending' | 'active' | 'complete' | 'error';
@@ -12,9 +12,13 @@ export interface UseSetupWizard {
   back: () => void;
   goToStep: (n: number) => void;
   markComplete: (step: number) => void;
+  passphrase: string;
+  setPassphrase: (value: string) => void;
+  clearPassphrase: () => void;
 }
 
 const TOTAL_STEPS = 5;
+const SetupWizardContext = createContext<UseSetupWizard | null>(null);
 
 function clampStep(step: number) {
   return Math.max(0, Math.min(step, TOTAL_STEPS - 1));
@@ -36,12 +40,13 @@ function buildInitialStepStatus(currentStep: number, setupComplete: boolean) {
   return status;
 }
 
-export function useSetupWizard(): UseSetupWizard {
+function useSetupWizardState(initialPassphrase = ''): UseSetupWizard {
   const { data, isLoading, error } = useSetupStatus();
   const [currentStep, setCurrentStep] = useState(0);
   const [stepStatus, setStepStatus] = useState<Record<number, SetupWizardStepStatus>>(
     buildInitialStepStatus(0, false),
   );
+  const [passphrase, setPassphrase] = useState(initialPassphrase);
   const currentStepRef = useRef(currentStep);
   const stepStatusRef = useRef(stepStatus);
 
@@ -125,5 +130,29 @@ export function useSetupWizard(): UseSetupWizard {
     back,
     goToStep,
     markComplete,
+    passphrase,
+    setPassphrase,
+    clearPassphrase: () => setPassphrase(''),
   };
+}
+
+export function SetupWizardProvider({
+  children,
+  initialPassphrase,
+}: {
+  children: React.ReactNode;
+  initialPassphrase?: string;
+}) {
+  const value = useSetupWizardState(initialPassphrase);
+  return <SetupWizardContext.Provider value={value}>{children}</SetupWizardContext.Provider>;
+}
+
+export function useSetupWizard(): UseSetupWizard {
+  const context = useContext(SetupWizardContext);
+
+  if (!context) {
+    throw new Error('useSetupWizard must be used within a SetupWizardProvider');
+  }
+
+  return context;
 }

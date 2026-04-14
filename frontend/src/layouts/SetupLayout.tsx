@@ -2,15 +2,26 @@ import { Outlet } from 'react-router-dom';
 import { AllAIChat } from '@/components/AllAIChat';
 import { StepIndicator } from '@/components/StepIndicator';
 import { Card } from '@/components/ui';
-import { useSetupWizard } from '@/hooks/useSetupWizard';
+import { SetupWizardProvider, useSetupWizard } from '@/hooks/useSetupWizard';
 
 const SETUP_STEP_LABELS = ['Welcome', 'Keypair', 'Connection', 'Upstream', 'Review'];
 
 export function SetupLayout() {
+  return (
+    <SetupWizardProvider>
+      <SetupLayoutContent />
+    </SetupWizardProvider>
+  );
+}
+
+function SetupLayoutContent() {
   const { currentStep, stepStatus } = useSetupWizard();
   const steps = SETUP_STEP_LABELS.map((label, index) => ({
     label,
-    status: stepStatus[index] === 'complete' ? 'complete' : stepStatus[index] === 'active' ? 'active' : 'pending',
+    status:
+      stepStatus[index] === 'complete' ? ('complete' as const) :
+      stepStatus[index] === 'active' ? ('active' as const) :
+      ('pending' as const),
   }));
 
   return (

@@ -13,6 +13,8 @@ import { LogsPlaceholder } from '@/pages/placeholders/LogsPlaceholder';
 import { SettingsPlaceholder } from '@/pages/placeholders/SettingsPlaceholder';
 import { UnlockPlaceholder } from '@/pages/placeholders/UnlockPlaceholder';
 import { NotFound } from '@/pages/NotFound';
+import { WelcomeStep } from '@/pages/setup/WelcomeStep';
+import { KeypairStep } from '@/pages/setup/KeypairStep';
 
 export function RootRedirect() {
   const loading = useNodeStore((state) => state.loading);
@@ -39,6 +41,8 @@ export const router = createBrowserRouter([
     element: <SetupLayout />,
     children: [
       { index: true, element: <Navigate to="/setup/welcome" replace /> },
+      { path: 'welcome', element: <WelcomeStep /> },
+      { path: 'keypair', element: <KeypairStep /> },
       { path: 'unlock', element: <UnlockPlaceholder /> },
     ],
   },
