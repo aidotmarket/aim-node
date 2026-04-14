@@ -20,13 +20,19 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from aim_node.core.crypto import DeviceCrypto
+from aim_node.core.market_client import (
+    MarketClient,
+    MarketClientError,
+    MarketClientHTTPError,
+)
 from aim_node.management.config_writer import (
     finalize_setup,
+    persist_node_id,
     persist_setup_step,
     read_config,
     write_config,
 )
-from aim_node.management.errors import ErrorCode, make_error
+from aim_node.management.errors import ErrorCode, make_error, make_market_error
 from aim_node.management.schemas import (
     ConfigReadResponse,
     ConfigUpdateRequest,
@@ -74,6 +80,23 @@ def _fingerprint_from_ed_pub(ed_pub) -> str:
         format=serialization.PublicFormat.Raw,
     )
     return hashlib.sha256(raw).hexdigest()
+
+
+def _load_runtime_config(data_dir: Path):
+    from aim_node.management.app import _load_core_config
+
+    raw = read_config(data_dir)
+    config = _load_core_config(raw)
+    if config is None:
+        raise ValueError("invalid config")
+    return config
+
+
+def _rebuild_marketplace_facade(request: Request, data_dir: Path) -> None:
+    from aim_node.management.facade import MarketplaceFacade
+
+    config = _load_runtime_config(data_dir)
+    request.app.state.facade = MarketplaceFacade.create(config)
 
 
 async def _parse_body(request: Request, model: Type[T]) -> T:
@@ -186,6 +209,73 @@ async def setup_finalize(request: Request) -> JSONResponse:
     )
     state.mark_setup_complete(body.mode)
     state.determine_node_state()
+
+    if body.mode in ("provider", "both"):
+        try:
+            config = _load_runtime_config(data_dir)
+            endpoint_url = config.upstream_url
+            if not endpoint_url:
+                raise ValueError("provider endpoint missing")
+
+            state_manager = getattr(request.app.state, "state_manager", state)
+            passphrase = state_manager.get_passphrase()
+            crypto = _crypto_for(data_dir, passphrase=passphrase or "")
+            private_key, public_key, _, _ = crypto.get_or_create_keypairs()
+            public_key_bytes = public_key.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            market_client = MarketClient(config)
+            registration = await market_client.register_node(
+                public_key=public_key_bytes,
+                endpoint_url=endpoint_url,
+                mode="seller",
+                private_key=private_key,
+            )
+        except MarketClientHTTPError as exc:
+            err = make_market_error(
+                exc.status_code,
+                str(exc),
+                "/api/v1/aim/nodes/register",
+            )
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=502)
+        except MarketClientError as exc:
+            if "timeout" in str(exc).lower():
+                err = make_error(
+                    ErrorCode.MARKET_TIMEOUT,
+                    "Marketplace registration timed out",
+                )
+                return JSONResponse(err.model_dump(exclude_none=True), status_code=504)
+            err = make_error(
+                ErrorCode.MARKET_UNREACHABLE,
+                "Cannot reach marketplace during seller registration",
+                suggested_action="Check your internet connection and API URL in Settings",
+            )
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=502)
+        except ValueError:
+            err = make_error(
+                ErrorCode.INTERNAL_ERROR,
+                "Seller registration could not be prepared from local config",
+            )
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
+        except Exception:
+            logger.exception("setup_finalize: seller registration failed")
+            err = make_error(
+                ErrorCode.INTERNAL_ERROR,
+                "Seller registration failed unexpectedly",
+            )
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
+
+        node_id = registration.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            err = make_error(
+                ErrorCode.INTERNAL_ERROR,
+                "Seller registration returned no node_id",
+            )
+            return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
+
+        persist_node_id(data_dir, node_id)
+        _rebuild_marketplace_facade(request, data_dir)
 
     # Best-effort autostart based on configured mode
     process_mgr = request.app.state.process_mgr

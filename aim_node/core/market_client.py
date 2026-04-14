@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import httpx
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from .auth import AuthService
 from .config import AIMCoreConfig
+from .crypto import DeviceCrypto
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -71,16 +74,61 @@ class MarketClient:
     async def get_listing(self, listing_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/listings/{listing_id}")
 
-    async def register_node(
-        self, public_key: str, endpoint_url: str, serial: str
+    async def register_challenge(
+        self,
+        public_key: str | bytes,
+        endpoint_url: str,
+        mode: str,
     ) -> dict[str, Any]:
+        transport_public_key = (
+            base64.b64encode(public_key).decode("ascii")
+            if isinstance(public_key, bytes)
+            else public_key
+        )
         return await self._request(
             "POST",
-            "/nodes/register",
+            "/api/v1/aim/nodes/register/challenge",
             json_body={
-                "public_key": public_key,
                 "endpoint_url": endpoint_url,
-                "serial": serial,
+                "public_key": transport_public_key,
+                "mode": mode,
+            },
+        )
+
+    async def register_node(
+        self,
+        public_key: str | bytes,
+        endpoint_url: str,
+        mode: str,
+        private_key: ed25519.Ed25519PrivateKey,
+    ) -> dict[str, Any]:
+        transport_public_key = (
+            base64.b64encode(public_key).decode("ascii")
+            if isinstance(public_key, bytes)
+            else public_key
+        )
+        challenge_payload = await self.register_challenge(
+            public_key=transport_public_key,
+            endpoint_url=endpoint_url,
+            mode=mode,
+        )
+        challenge = challenge_payload.get("challenge")
+        if not isinstance(challenge, str) or not challenge:
+            raise ValueError("registration challenge missing challenge")
+
+        pop_signature = base64.urlsafe_b64encode(
+            DeviceCrypto.sign(private_key, challenge.encode("utf-8"))
+        ).decode("ascii")
+
+        return await self._request(
+            "POST",
+            "/api/v1/aim/nodes/register",
+            json_body={
+                "endpoint_url": endpoint_url,
+                "public_key": transport_public_key,
+                "mode": mode,
+                "challenge": challenge,
+                "pop_signature": pop_signature,
             },
         )
 

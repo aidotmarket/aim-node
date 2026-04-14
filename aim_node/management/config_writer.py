@@ -125,3 +125,12 @@ def persist_setup_step(data_dir: Path, step: int) -> None:
         config["management"] = {}
     config["management"]["setup_step"] = step
     write_config(data_dir, config)
+
+
+def persist_node_id(data_dir: Path, node_id: str) -> None:
+    """Persist backend node_id to config.toml."""
+    config = read_config(data_dir)
+    if "core" not in config:
+        config["core"] = {}
+    config["core"]["node_id"] = node_id
+    write_config(data_dir, config)

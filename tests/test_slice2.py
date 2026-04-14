@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
 
 from aim_node.core.auth import AuthService
 from aim_node.core.config import AIMCoreConfig
 from aim_node.core.connectivity_token import ConnectivityTokenService
+from aim_node.core.crypto import DeviceCrypto
 from aim_node.core.market_client import MarketClient
 from aim_node.core.trust_channel import TrustChannelClient
 
@@ -291,3 +294,122 @@ async def test_market_client_search_listings(
     assert captured["method"] == "GET"
     assert captured["path"] == "/listings/search"
     assert captured["params"] == {"query": "gpu"}
+
+
+@pytest.mark.asyncio
+async def test_market_client_register_challenge_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = AIMCoreConfig(
+        keystore_path=tmp_path / "keystore.json",
+        node_serial="node-42",
+        api_key="api-key",
+    )
+    captured: dict[str, Any] = {}
+    _, public_key = DeviceCrypto.generate_ed25519_keypair()
+    public_key_bytes = public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+
+    def handler(method: str, path: str, kwargs: dict[str, Any], base_url: str, timeout: float) -> httpx.Response:
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        request = httpx.Request(method, f"{base_url}{path}")
+        return httpx.Response(200, json={"challenge": "challenge-123"}, request=request)
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: MockAsyncClient(handler=handler, **kwargs),
+    )
+    client = MarketClient(config)
+
+    payload = await client.register_challenge(
+        public_key=public_key_bytes,
+        endpoint_url="https://example.test/mcp",
+        mode="seller",
+    )
+
+    assert payload == {"challenge": "challenge-123"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/aim/nodes/register/challenge"
+    assert captured["json"] == {
+        "endpoint_url": "https://example.test/mcp",
+        "public_key": base64.b64encode(public_key_bytes).decode("ascii"),
+        "mode": "seller",
+    }
+
+
+@pytest.mark.asyncio
+async def test_market_client_register_node_two_step_payloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = AIMCoreConfig(
+        keystore_path=tmp_path / "keystore.json",
+        node_serial="node-42",
+        api_key="api-key",
+    )
+    calls: list[dict[str, Any]] = []
+    private_key, public_key = DeviceCrypto.generate_ed25519_keypair()
+    public_key_bytes = public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    expected_public_key = base64.b64encode(public_key_bytes).decode("ascii")
+    challenge = "challenge-xyz"
+
+    def handler(method: str, path: str, kwargs: dict[str, Any], base_url: str, timeout: float) -> httpx.Response:
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "json": kwargs.get("json"),
+            }
+        )
+        request = httpx.Request(method, f"{base_url}{path}")
+        if path == "/api/v1/aim/nodes/register/challenge":
+            return httpx.Response(200, json={"challenge": challenge}, request=request)
+        if path == "/api/v1/aim/nodes/register":
+            return httpx.Response(201, json={"node_id": "node-backend-123"}, request=request)
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: MockAsyncClient(handler=handler, **kwargs),
+    )
+    client = MarketClient(config)
+
+    payload = await client.register_node(
+        public_key=public_key_bytes,
+        endpoint_url="https://example.test/mcp",
+        mode="seller",
+        private_key=private_key,
+    )
+
+    assert payload == {"node_id": "node-backend-123"}
+    assert calls[0] == {
+        "method": "POST",
+        "path": "/api/v1/aim/nodes/register/challenge",
+        "json": {
+            "endpoint_url": "https://example.test/mcp",
+            "public_key": expected_public_key,
+            "mode": "seller",
+        },
+    }
+    expected_signature = base64.urlsafe_b64encode(
+        DeviceCrypto.sign(private_key, challenge.encode("utf-8"))
+    ).decode("ascii")
+    assert calls[1] == {
+        "method": "POST",
+        "path": "/api/v1/aim/nodes/register",
+        "json": {
+            "endpoint_url": "https://example.test/mcp",
+            "public_key": expected_public_key,
+            "mode": "seller",
+            "challenge": challenge,
+            "pop_signature": expected_signature,
+        },
+    }

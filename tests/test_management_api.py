@@ -12,7 +12,7 @@ import pytest
 
 from aim_node.core.crypto import DeviceCrypto
 from aim_node.management.app import create_management_app
-from aim_node.management.config_writer import write_config
+from aim_node.management.config_writer import persist_node_id, read_config, write_config
 from aim_node.management.process import ProcessManager
 from aim_node.management.state import NodeState, ProcessStateStore, SessionSnapshot
 
@@ -302,6 +302,124 @@ async def test_setup_finalize_invalid_url_scheme(fresh_app):
             },
         )
     assert r.status_code == 422
+
+
+# 11a
+def test_persist_node_id_updates_config(tmp_data_dir: Path):
+    write_config(
+        tmp_data_dir,
+        {
+            "core": {
+                "node_serial": "node-test-123",
+                "market_api_url": "https://api.example.test",
+                "api_key": "key",
+            },
+            "management": {
+                "setup_complete": True,
+                "setup_step": 5,
+                "mode": "provider",
+            },
+        },
+    )
+
+    persist_node_id(tmp_data_dir, "node-backend-123")
+
+    config = read_config(tmp_data_dir)
+    assert config["core"]["node_id"] == "node-backend-123"
+
+
+# 11b
+async def test_setup_finalize_provider_registers_node_and_rebuilds_facade(
+    fresh_app, tmp_data_dir: Path
+):
+    app, state, pm = fresh_app
+    app.state.state_manager = state
+    _create_keystore(tmp_data_dir, passphrase="")
+    facade = MagicMock()
+
+    with (
+        patch.object(pm, "autostart", new=AsyncMock()) as autostart,
+        patch(
+            "aim_node.management.routes.MarketClient.register_node",
+            new=AsyncMock(return_value={"node_id": "node-backend-123"}),
+        ) as register_node,
+        patch(
+            "aim_node.management.facade.MarketplaceFacade.create",
+            return_value=facade,
+        ) as create_facade,
+    ):
+        async with _make_client(app) as client:
+            r = await client.post(
+                "/api/mgmt/setup/finalize",
+                json={
+                    "mode": "provider",
+                    "api_url": "https://api.example.test",
+                    "api_key": "key",
+                    "upstream_url": "https://provider.example.test/mcp",
+                },
+            )
+
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    config = read_config(tmp_data_dir)
+    assert config["core"]["node_id"] == "node-backend-123"
+    assert app.state.facade is facade
+    register_call = register_node.await_args.kwargs
+    assert register_call["endpoint_url"] == "https://provider.example.test/mcp"
+    assert register_call["mode"] == "seller"
+    assert isinstance(register_call["public_key"], bytes)
+    create_facade.assert_called_once()
+    autostart.assert_awaited_once()
+
+
+# 11c
+async def test_setup_finalize_provider_uses_state_manager_passphrase(
+    fresh_app, tmp_data_dir: Path
+):
+    app, _, pm = fresh_app
+    _create_keystore(tmp_data_dir, passphrase="topsecret")
+    state_manager = MagicMock()
+    state_manager.get_passphrase.return_value = "topsecret"
+    app.state.state_manager = state_manager
+    facade = MagicMock()
+    seen: dict[str, str] = {}
+    real_crypto_for = __import__("aim_node.management.routes", fromlist=["_crypto_for"])._crypto_for
+
+    def capture_crypto_for(data_dir: Path, passphrase: str = ""):
+        seen["passphrase"] = passphrase
+        return real_crypto_for(data_dir, passphrase=passphrase)
+
+    with (
+        patch.object(pm, "autostart", new=AsyncMock()) as autostart,
+        patch(
+            "aim_node.management.routes._crypto_for",
+            side_effect=capture_crypto_for,
+        ) as crypto_for,
+        patch(
+            "aim_node.management.routes.MarketClient.register_node",
+            new=AsyncMock(return_value={"node_id": "node-backend-456"}),
+        ),
+        patch(
+            "aim_node.management.facade.MarketplaceFacade.create",
+            return_value=facade,
+        ),
+    ):
+        async with _make_client(app) as client:
+            r = await client.post(
+                "/api/mgmt/setup/finalize",
+                json={
+                    "mode": "provider",
+                    "api_url": "https://api.example.test",
+                    "api_key": "key",
+                    "upstream_url": "https://provider.example.test/mcp",
+                },
+            )
+
+    assert r.status_code == 200
+    assert seen["passphrase"] == "topsecret"
+    state_manager.get_passphrase.assert_called_once()
+    crypto_for.assert_called_once()
+    autostart.assert_awaited_once()
 
 
 # 12
