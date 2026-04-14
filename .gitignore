@@ -10,3 +10,8 @@ build/
 venv/
 .pytest_cache/
 .mypy_cache/
+-e 
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+task_state.md
