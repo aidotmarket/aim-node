@@ -1,10 +1,16 @@
-import { useMemo } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Badge, Button, Card, PageHeader, Spinner } from '@/components/ui';
+import { useMemo, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Badge, Button, Card, Field, Input, PageHeader, Spinner } from '@/components/ui';
 import { ToolSchemaPanel } from '@/components/tools/ToolSchemaPanel';
 import { ToolStatusBadge } from '@/components/tools/ToolStatusBadge';
 import { useToolDetail, useValidateTool } from '@/hooks/useLocalTools';
-import { findMarketplaceTool, useMarketplaceTools } from '@/hooks/useMarketplaceTools';
+import {
+  findMarketplaceTool,
+  useMarketplaceTools,
+  useUnpublishTool,
+  useUpdateTool,
+} from '@/hooks/useMarketplaceTools';
+import type { PricingModel } from '@/types/marketplace';
 
 function validationBadgeVariant(status: string): 'success' | 'warning' | 'error' | 'neutral' {
   const normalized = status.toLowerCase();
@@ -56,10 +62,18 @@ function RegistrationBanner() {
 export function ToolDetailPage() {
   const navigate = useNavigate();
   const { toolId } = useParams();
-  const [searchParams] = useSearchParams();
   const toolDetailQuery = useToolDetail(toolId);
   const marketplaceToolsQuery = useMarketplaceTools();
   const validateTool = useValidateTool(toolId);
+  const updateTool = useUpdateTool(toolId ?? '');
+  const unpublishTool = useUnpublishTool(toolId ?? '');
+
+  const [showUpdate, setShowUpdate] = useState(false);
+  const [showUnpublishConfirm, setShowUnpublishConfirm] = useState(false);
+  const [updateDescription, setUpdateDescription] = useState('');
+  const [updatePricingModel, setUpdatePricingModel] = useState<PricingModel>('per_call');
+  const [updatePriceCents, setUpdatePriceCents] = useState('10');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const marketplace = useMemo(() => {
     if (!toolDetailQuery.data) return null;
@@ -93,7 +107,41 @@ export function ToolDetailPage() {
   }
 
   const tool = toolDetailQuery.data;
-  const publishAction = searchParams.get('action');
+
+  function openUpdate() {
+    setActionError(null);
+    setUpdateDescription(marketplace?.nl_description ?? tool.description ?? '');
+    setUpdatePricingModel(marketplace?.pricing_formula?.model ?? 'per_call');
+    setUpdatePriceCents(String(marketplace?.pricing_formula?.price_cents ?? 10));
+    setShowUpdate(true);
+  }
+
+  async function handleUpdate() {
+    setActionError(null);
+    try {
+      const priceNum = Number(updatePriceCents);
+      await updateTool.mutateAsync({
+        nl_description: updateDescription.trim() || undefined,
+        pricing_formula: {
+          model: updatePricingModel,
+          price_cents: Number.isFinite(priceNum) ? priceNum : 0,
+        },
+      });
+      setShowUpdate(false);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Update failed');
+    }
+  }
+
+  async function handleUnpublish() {
+    setActionError(null);
+    try {
+      await unpublishTool.mutateAsync();
+      setShowUnpublishConfirm(false);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Unpublish failed');
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -111,20 +159,14 @@ export function ToolDetailPage() {
             </Button>
             <Button
               variant="primary"
-              onClick={() => navigate(`/tools/${tool.tool_id}?action=publish`)}
+              onClick={() => navigate(`/tools/publish?toolId=${tool.tool_id}`)}
             >
               Publish
             </Button>
-            <Button
-              variant="secondary"
-              onClick={() => navigate(`/tools/${tool.tool_id}?action=update`)}
-            >
+            <Button variant="secondary" onClick={openUpdate}>
               Update
             </Button>
-            <Button
-              variant="ghost"
-              onClick={() => navigate(`/tools/${tool.tool_id}?action=unpublish`)}
-            >
+            <Button variant="ghost" onClick={() => setShowUnpublishConfirm(true)}>
               Unpublish
             </Button>
           </div>
@@ -133,13 +175,81 @@ export function ToolDetailPage() {
 
       {marketplaceToolsQuery.data?.setupIncomplete && <RegistrationBanner />}
 
-      {publishAction && (
-        <Card className="border-indigo-200 bg-indigo-50">
-          <p className="text-sm text-brand-indigo">
-            {publishAction === 'publish'
-              ? 'Publish flow ships in Slice C. This action is linked and ready for follow-up work.'
-              : `${publishAction.charAt(0).toUpperCase()}${publishAction.slice(1)} flow ships in Slice C.`}
+      {actionError && (
+        <Card className="border-red-200 bg-red-50">
+          <p role="alert" className="text-sm text-brand-error">
+            {actionError}
           </p>
+        </Card>
+      )}
+
+      {showUpdate && (
+        <Card>
+          <div className="space-y-4">
+            <h2 className="text-sm font-semibold text-brand-text">Update listing</h2>
+            <Field label="Description">
+              <textarea
+                aria-label="Update description"
+                value={updateDescription}
+                onChange={(e) => setUpdateDescription(e.target.value)}
+                rows={3}
+                className="rounded-brand border border-[#E8E8E8] px-3 py-2 text-sm"
+              />
+            </Field>
+            <Field label="Pricing model">
+              <select
+                aria-label="Update pricing model"
+                value={updatePricingModel}
+                onChange={(e) => setUpdatePricingModel(e.target.value as PricingModel)}
+                className="rounded-brand border border-[#E8E8E8] px-3 py-2 text-sm"
+              >
+                <option value="per_call">per_call</option>
+                <option value="per_minute">per_minute</option>
+                <option value="flat_monthly">flat_monthly</option>
+              </select>
+            </Field>
+            <Input
+              label="Price (cents)"
+              type="number"
+              min="0"
+              value={updatePriceCents}
+              onChange={(e) => setUpdatePriceCents(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="primary"
+                loading={updateTool.isPending}
+                onClick={handleUpdate}
+              >
+                Save
+              </Button>
+              <Button variant="ghost" onClick={() => setShowUpdate(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {showUnpublishConfirm && (
+        <Card className="border-red-200">
+          <div className="space-y-3">
+            <p className="text-sm text-brand-text">
+              Are you sure you want to unpublish this tool? It will no longer be discoverable.
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="danger"
+                loading={unpublishTool.isPending}
+                onClick={handleUnpublish}
+              >
+                Confirm Unpublish
+              </Button>
+              <Button variant="ghost" onClick={() => setShowUnpublishConfirm(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
         </Card>
       )}
 

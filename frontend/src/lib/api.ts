@@ -37,6 +37,20 @@ class ApiClient {
     return res.json();
   }
 
+  async put<T>(path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.csrfToken ? { 'X-CSRF-Token': this.csrfToken } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    this.extractCsrf(res);
+    if (!res.ok) throw await this.parseError(res);
+    return res.json();
+  }
+
   async delete<T>(path: string): Promise<T> {
     const res = await fetch(`${API_BASE}${path}`, {
       method: 'DELETE',

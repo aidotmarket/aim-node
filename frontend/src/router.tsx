@@ -19,6 +19,7 @@ import { ReviewStep } from '@/pages/setup/ReviewStep';
 import { UnlockPage } from '@/pages/setup/UnlockPage';
 import { ToolsListPage } from '@/pages/tools/ToolsListPage';
 import { ToolDetailPage } from '@/pages/tools/ToolDetailPage';
+import { PublishFlow } from '@/pages/tools/PublishFlow';
 
 export function RootRedirect() {
   const loading = useNodeStore((state) => state.loading);
@@ -85,6 +86,7 @@ export const router = createBrowserRouter([
     children: [
       { path: 'dashboard', element: <DashboardPlaceholder /> },
       { path: 'tools', element: <ToolsListPage /> },
+      { path: 'tools/publish', element: <PublishFlow /> },
       { path: 'tools/:toolId', element: <ToolDetailPage /> },
       { path: 'earnings', element: <EarningsPlaceholder /> },
       { path: 'sessions', element: <SessionsPlaceholder /> },

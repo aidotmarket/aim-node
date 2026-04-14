@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToolDetailPage } from '../ToolDetailPage';
@@ -149,6 +149,129 @@ describe('ToolDetailPage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('alpha.tool')).toBeInTheDocument();
     expect(screen.getAllByText('Unpublished').length).toBeGreaterThan(0);
+  });
+
+  it('submits a PUT update when Update is saved', async () => {
+    mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (url.includes('/api/mgmt/tools/tool-alpha') && !url.includes('marketplace')) {
+        return Promise.resolve(
+          jsonResponse({
+            tool_id: 'tool-alpha',
+            name: 'alpha.tool',
+            version: '1.2.3',
+            description: 'desc',
+            input_schema: { type: 'object' },
+            output_schema: { type: 'object' },
+            validation_status: 'passed',
+            last_scanned_at: '2026-04-14T12:00:00Z',
+            last_validated_at: null,
+          }),
+        );
+      }
+
+      if (url.includes('/api/mgmt/marketplace/tools/tool-alpha') && method === 'PUT') {
+        return Promise.resolve(jsonResponse({ tool_id: 'tool-alpha', updated: true }));
+      }
+
+      if (url.includes('/api/mgmt/marketplace/tools')) {
+        return Promise.resolve(
+          jsonResponse({
+            tools: [
+              {
+                tool_id: 'tool-alpha',
+                tool_name: 'alpha.tool',
+                listing_id: 'listing-1',
+                status: 'published',
+                nl_description: 'old desc',
+                price_usd: 0.1,
+              },
+            ],
+          }),
+        );
+      }
+
+      return Promise.reject(new Error(`Unhandled URL: ${url}`));
+    });
+
+    renderToolDetailPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+
+    fireEvent.change(screen.getByLabelText('Update description'), {
+      target: { value: 'new desc' },
+    });
+    fireEvent.change(screen.getByLabelText('Price (cents)'), { target: { value: '50' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    });
+
+    const putCall = await waitFor(() =>
+      mockFetch.mock.calls.find(
+        ([url, init]) =>
+          String(url).includes('/marketplace/tools/tool-alpha') &&
+          (init as RequestInit | undefined)?.method === 'PUT',
+      ),
+    );
+    expect(putCall).toBeDefined();
+    const body = JSON.parse((putCall![1] as RequestInit).body as string);
+    expect(body).toMatchObject({
+      nl_description: 'new desc',
+      pricing_formula: { model: 'per_call', price_cents: 50 },
+    });
+  });
+
+  it('confirms and sends a DELETE when unpublishing', async () => {
+    mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+
+      if (url.includes('/api/mgmt/tools/tool-alpha') && !url.includes('marketplace')) {
+        return Promise.resolve(
+          jsonResponse({
+            tool_id: 'tool-alpha',
+            name: 'alpha.tool',
+            version: '1.2.3',
+            description: 'desc',
+            input_schema: {},
+            output_schema: {},
+            validation_status: 'passed',
+            last_scanned_at: '2026-04-14T12:00:00Z',
+            last_validated_at: null,
+          }),
+        );
+      }
+
+      if (url.includes('/api/mgmt/marketplace/tools/tool-alpha') && method === 'DELETE') {
+        return Promise.resolve(jsonResponse({ deleted: true }));
+      }
+
+      if (url.includes('/api/mgmt/marketplace/tools')) {
+        return Promise.resolve(jsonResponse({ tools: [] }));
+      }
+
+      return Promise.reject(new Error(`Unhandled URL: ${url}`));
+    });
+
+    renderToolDetailPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Unpublish' }));
+
+    expect(screen.getByText(/Are you sure you want to unpublish/)).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm Unpublish' }));
+    });
+
+    const deleteCall = await waitFor(() =>
+      mockFetch.mock.calls.find(
+        ([url, init]) =>
+          String(url).includes('/marketplace/tools/tool-alpha') &&
+          (init as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    );
+    expect(deleteCall).toBeDefined();
   });
 });
 
