@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+tsconfig.tsbuildinfo
 *.pyo
 *.egg-info/
 dist/

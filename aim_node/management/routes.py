@@ -92,10 +92,43 @@ def _load_runtime_config(data_dir: Path):
     return config
 
 
-def _rebuild_marketplace_facade(request: Request, data_dir: Path) -> None:
+def _runtime_config_from_setup(
+    data_dir: Path,
+    *,
+    api_url: str,
+    api_key: str,
+    upstream_url: str | None,
+):
+    from aim_node.management.app import _load_core_config
+
+    raw = read_config(data_dir)
+    core = raw.setdefault("core", {})
+    core["market_api_url"] = api_url
+    core["api_key"] = api_key
+    core.setdefault("node_serial", "pending-registration")
+    core.setdefault("keystore_path", str(data_dir / "keystore.json"))
+    core.setdefault("data_dir", str(data_dir))
+    if upstream_url:
+        provider = raw.setdefault("provider", {})
+        adapter = provider.setdefault("adapter", {})
+        adapter["endpoint_url"] = upstream_url
+
+    config = _load_core_config(raw)
+    if config is None:
+        raise ValueError("invalid config")
+    return config
+
+
+def _rebuild_marketplace_facade(
+    request: Request,
+    data_dir: Path,
+    *,
+    config=None,
+) -> None:
     from aim_node.management.facade import MarketplaceFacade
 
-    config = _load_runtime_config(data_dir)
+    if config is None:
+        config = _load_runtime_config(data_dir)
     request.app.state.facade = MarketplaceFacade.create(config)
 
 
@@ -200,19 +233,15 @@ async def setup_finalize(request: Request) -> JSONResponse:
     body = await _parse_body(request, FinalizeSetupRequest)
     state = request.app.state.store
     data_dir: Path = state._data_dir
-    finalize_setup(
-        data_dir=data_dir,
-        mode=body.mode,
-        api_url=body.api_url,
-        api_key=body.api_key,
-        upstream_url=body.upstream_url,
-    )
-    state.mark_setup_complete(body.mode)
-    state.determine_node_state()
 
     if body.mode in ("provider", "both"):
         try:
-            config = _load_runtime_config(data_dir)
+            config = _runtime_config_from_setup(
+                data_dir,
+                api_url=body.api_url,
+                api_key=body.api_key,
+                upstream_url=body.upstream_url,
+            )
             endpoint_url = config.upstream_url
             if not endpoint_url:
                 raise ValueError("provider endpoint missing")
@@ -274,8 +303,29 @@ async def setup_finalize(request: Request) -> JSONResponse:
             )
             return JSONResponse(err.model_dump(exclude_none=True), status_code=500)
 
+        config.node_id = node_id
         persist_node_id(data_dir, node_id)
-        _rebuild_marketplace_facade(request, data_dir)
+        _rebuild_marketplace_facade(request, data_dir, config=config)
+        finalize_setup(
+            data_dir=data_dir,
+            mode=body.mode,
+            api_url=body.api_url,
+            api_key=body.api_key,
+            upstream_url=body.upstream_url,
+        )
+        persist_node_id(data_dir, node_id)
+        state.mark_setup_complete(body.mode)
+        state.determine_node_state()
+    else:
+        finalize_setup(
+            data_dir=data_dir,
+            mode=body.mode,
+            api_url=body.api_url,
+            api_key=body.api_key,
+            upstream_url=body.upstream_url,
+        )
+        state.mark_setup_complete(body.mode)
+        state.determine_node_state()
 
     # Best-effort autostart based on configured mode
     process_mgr = request.app.state.process_mgr

@@ -373,6 +373,43 @@ async def test_setup_finalize_provider_registers_node_and_rebuilds_facade(
 
 
 # 11c
+async def test_setup_finalize_provider_registration_failure_keeps_setup_incomplete(
+    fresh_app, tmp_data_dir: Path
+):
+    app, state, pm = fresh_app
+    app.state.state_manager = state
+    _create_keystore(tmp_data_dir, passphrase="")
+
+    with (
+        patch.object(pm, "autostart", new=AsyncMock()) as autostart,
+        patch(
+            "aim_node.management.routes.MarketClient.register_node",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+    ):
+        async with _make_client(app) as client:
+            r = await client.post(
+                "/api/mgmt/setup/finalize",
+                json={
+                    "mode": "provider",
+                    "api_url": "https://api.example.test",
+                    "api_key": "key",
+                    "upstream_url": "https://provider.example.test/mcp",
+                },
+            )
+
+    assert r.status_code == 500
+    status = state.get_status()
+    assert status["setup_complete"] is False
+    assert status["current_step"] == 0
+    assert status["node_state"] == NodeState.SETUP_INCOMPLETE.value
+    config = read_config(tmp_data_dir)
+    assert config.get("management", {}).get("setup_complete", False) is False
+    assert "node_id" not in config.get("core", {})
+    autostart.assert_not_awaited()
+
+
+# 11d
 async def test_setup_finalize_provider_uses_state_manager_passphrase(
     fresh_app, tmp_data_dir: Path
 ):
