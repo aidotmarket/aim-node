@@ -285,3 +285,91 @@ Replace SP-5 through SP-8 with:
 | SP-7 | As a seller, I can remove a tool from the marketplace | "Remove" button + confirmation → `DELETE /api/mgmt/marketplace/tools/{tool_id}` |
 
 SP-1 through SP-4 and SP-9 remain unchanged.
+
+---
+
+## R3 Addendum — Finding 4 Final Resolution (S439)
+
+### The Gap
+
+`finalize_setup()` writes `core.node_serial` (local UUID) to config.toml but never calls `MarketClient.register_node()` and never writes `core.node_id` (backend-assigned UUID). Without `node_id`, `MarketplaceFacade.create()` raises (facade.py:44), `app.state.facade` stays `None`, and all marketplace routes return 412.
+
+`MarketClient.register_node(public_key, endpoint_url, serial)` → `POST /nodes/register` exists but is never invoked in the setup or publish flow.
+
+### Resolution: New `/api/mgmt/marketplace/register` route
+
+This BQ adds a registration route to the management API that:
+1. Calls `MarketClient.register_node()` with the node's public key, endpoint URL, and serial
+2. Writes the returned `node_id` to `config.toml` under `core.node_id`
+3. Re-initializes `app.state.facade` with the updated config
+
+**New route:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/mgmt/marketplace/register` | Register node with ai.market, persist node_id, init facade |
+
+**Handler implementation (new file or added to marketplace.py):**
+
+```python
+async def marketplace_register(request: Request) -> JSONResponse:
+    state = request.app.state.store
+    data_dir: Path = state._data_dir
+    
+    # 1. Load config and build a temporary MarketClient
+    raw_config = read_config(data_dir)
+    core_cfg = load_core_config(raw_config)
+    if core_cfg is None:
+        return _facade_unavailable()
+    
+    # 2. Get public key from keystore
+    crypto = _crypto_for(data_dir, passphrase=state.get_passphrase() or "")
+    _, ed_pub, _, _ = crypto.get_or_create_keypairs()
+    
+    # 3. Call register_node
+    auth = AuthService(core_cfg)
+    client = MarketClient(core_cfg, auth_service=auth)
+    result = await client.register_node(
+        public_key=ed_pub,
+        endpoint_url=core_cfg.upstream_url or "",
+        serial=core_cfg.node_serial,
+    )
+    
+    # 4. Persist node_id to config
+    node_id = result.get("node_id") or result.get("id")
+    if not node_id:
+        err = make_error(ErrorCode.MARKET_ERROR, "Registration succeeded but no node_id returned")
+        return JSONResponse(err.model_dump(exclude_none=True), status_code=502)
+    
+    raw_config.setdefault("core", {})["node_id"] = node_id
+    write_config(data_dir, raw_config)
+    
+    # 5. Re-init facade
+    updated_cfg = load_core_config(read_config(data_dir))
+    request.app.state.facade = MarketplaceFacade.create(updated_cfg)
+    
+    return JSONResponse({"node_id": node_id, "registered": True})
+```
+
+**Mount in app.py:**
+```python
+Route("/api/mgmt/marketplace/register", marketplace_register, methods=["POST"]),
+```
+
+### Updated Frontend Flow
+
+The ToolsListPage checks facade availability on mount:
+1. Call `GET /api/mgmt/marketplace/node` — if 412 (facade unavailable), show registration CTA
+2. User clicks "Register Node" → `POST /api/mgmt/marketplace/register`
+3. On success, facade is initialized, page reloads marketplace tools
+4. On failure, show error with retry option
+
+This handles both first-time registration and cases where registration failed during setup (network issues, etc.).
+
+### Why Not in Setup Wizard
+
+Registration requires the node's keypair AND a working internet connection to api.ai.market. The setup wizard's finalize step already does a lot (write config, autostart processes). Adding registration there creates a harder failure mode — if registration fails, does finalize fail? By making registration a separate explicit step in the seller flow, we keep setup finalize simple and let the user retry registration independently.
+
+### Updated Dependency
+
+This BQ now has NO dependency on a separate registration mechanism. It is self-contained: the registration route is part of this BQ's Gate 2 scope.
