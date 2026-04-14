@@ -7,14 +7,7 @@ describe('nodeStore', () => {
 
   beforeEach(() => {
     globalThis.fetch = mockFetch;
-    // Reset zustand store between tests
-    useNodeStore.setState({
-      setupComplete: false,
-      locked: false,
-      healthStatus: 'unknown',
-      csrfToken: null,
-      loading: false,
-    });
+    useNodeStore.setState(useNodeStore.getInitialState(), true);
   });
 
   afterEach(() => {
@@ -34,26 +27,33 @@ describe('nodeStore', () => {
     expect(state.setupComplete).toBe(false);
     expect(state.locked).toBe(false);
     expect(state.healthStatus).toBe('unknown');
-    expect(state.loading).toBe(false);
+    expect(state.csrfToken).toBeNull();
+    expect(state.loading).toBe(true);
   });
 
   it('bootstrap populates state from health response', async () => {
     mockFetch.mockResolvedValueOnce(
-      jsonResponse({ status: 'healthy', locked: true, setup_complete: true }),
+      jsonResponse({
+        healthy: true,
+        locked: false,
+        setup_complete: true,
+        csrf_token: 'tok',
+      }),
     );
 
     await useNodeStore.getState().bootstrap();
 
     const state = useNodeStore.getState();
     expect(state.setupComplete).toBe(true);
-    expect(state.locked).toBe(true);
+    expect(state.locked).toBe(false);
     expect(state.healthStatus).toBe('healthy');
+    expect(state.csrfToken).toBe('tok');
     expect(state.loading).toBe(false);
   });
 
   it('bootstrap sets degraded status for non-healthy response', async () => {
     mockFetch.mockResolvedValueOnce(
-      jsonResponse({ status: 'degraded', locked: false, setup_complete: false }),
+      jsonResponse({ healthy: false, locked: false, setup_complete: false }),
     );
 
     await useNodeStore.getState().bootstrap();
@@ -81,7 +81,7 @@ describe('nodeStore', () => {
     // Should be loading while fetch is pending
     expect(useNodeStore.getState().loading).toBe(true);
 
-    resolvePromise!(jsonResponse({ status: 'healthy', locked: false, setup_complete: true }));
+    resolvePromise!(jsonResponse({ healthy: true, locked: false, setup_complete: true }));
     await bootstrapPromise;
 
     expect(useNodeStore.getState().loading).toBe(false);

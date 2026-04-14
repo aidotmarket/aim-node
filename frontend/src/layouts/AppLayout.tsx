@@ -10,7 +10,9 @@ import {
   Menu,
   X,
 } from 'lucide-react';
+import { AllAIChat } from '@/components/AllAIChat';
 import { StatusBadge } from '@/components/ui';
+import { useNodeStore } from '@/store/nodeStore';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -23,6 +25,7 @@ const navItems = [
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const healthStatus = useNodeStore((state) => state.healthStatus);
 
   return (
     <div className="flex h-screen bg-brand-surface">
@@ -42,7 +45,7 @@ export function AppLayout() {
       >
         <div className="flex items-center gap-3 px-5 h-16 border-b border-[#E8E8E8]">
           <span className="text-lg font-semibold text-brand-indigo">AIM Node</span>
-          <StatusBadge status="unknown" />
+          <StatusBadge status={healthStatus} />
         </div>
         <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
           {navItems.map(({ to, label, icon: Icon }) => (
@@ -91,6 +94,7 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <AllAIChat />
     </div>
   );
 }

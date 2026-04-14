@@ -1,8 +1,8 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AppLayout } from '@/layouts/AppLayout';
 import { SetupLayout } from '@/layouts/SetupLayout';
-import { useNodeState } from '@/hooks/useNodeState';
 import { Spinner } from '@/components/ui';
+import { useNodeStore } from '@/store/nodeStore';
 import { DashboardPlaceholder } from '@/pages/placeholders/DashboardPlaceholder';
 import { ToolsPlaceholder } from '@/pages/placeholders/ToolsPlaceholder';
 import { ToolDetailPlaceholder } from '@/pages/placeholders/ToolDetailPlaceholder';
@@ -16,7 +16,9 @@ import { UnlockPlaceholder } from '@/pages/placeholders/UnlockPlaceholder';
 import { NotFound } from '@/pages/NotFound';
 
 export function RootRedirect() {
-  const { loading, locked, setupComplete } = useNodeState();
+  const loading = useNodeStore((state) => state.loading);
+  const locked = useNodeStore((state) => state.locked);
+  const setupComplete = useNodeStore((state) => state.setupComplete);
 
   if (loading) {
     return (
