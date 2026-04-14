@@ -90,14 +90,23 @@ def _allowed_tools(request: Request) -> list[str]:
     return list(DEFAULT_ALLOWED_TOOLS)
 
 
+def _config_node_id(request: Request) -> str:
+    config = read_config(_data_dir(request.app.state.store))
+    core = config.get("core", {}) if isinstance(config, dict) else {}
+    return str(core.get("node_id") or "").strip()
+
+
 def _node_id(request: Request) -> str:
     facade = getattr(request.app.state, "facade", None)
     if facade is not None and getattr(facade, "node_id", None):
         return str(facade.node_id)
+    config_node_id = _config_node_id(request)
+    if config_node_id:
+        return config_node_id
     store = request.app.state.store
     config = read_config(_data_dir(store))
     core = config.get("core", {}) if isinstance(config, dict) else {}
-    return str(core.get("node_id") or core.get("node_serial") or "")
+    return str(core.get("node_serial") or "")
 
 
 def _pick_dict_fields(source: Any, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -183,7 +192,99 @@ def _safe_discovered_tools_context(cached: Any) -> list[dict[str, Any]]:
     return safe_tools
 
 
-def _gather_context(request: Request) -> tuple[dict[str, Any], bool]:
+def _extract_marketplace_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("tools", "items", "results", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _safe_published_tools_context(payload: Any) -> list[str]:
+    published_tools: list[str] = []
+    for item in _extract_marketplace_items(payload):
+        status = str(item.get("status") or "").strip().lower()
+        if status == "not_published":
+            continue
+        tool_name = item.get("tool_name") or item.get("name")
+        if not isinstance(tool_name, str):
+            continue
+        normalized = tool_name.strip()
+        if normalized:
+            published_tools.append(normalized)
+    return published_tools
+
+
+def _safe_earnings_summary_context(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    summary = _pick_dict_fields(
+        payload,
+        (
+            "range",
+            "currency",
+            "gross_usd",
+            "net_usd",
+            "total_usd",
+            "gross_cents",
+            "net_cents",
+            "total_cents",
+            "sessions",
+            "sessions_count",
+            "payouts",
+            "payouts_count",
+        ),
+    )
+    return summary or None
+
+
+async def _safe_marketplace_context(request: Request) -> tuple[dict[str, Any], bool]:
+    config_node_id = _config_node_id(request)
+    registered = bool(config_node_id)
+    facade = getattr(request.app.state, "facade", None)
+    published_tools: list[str] = []
+    earnings_summary: dict[str, Any] | None = None
+    degraded = False
+
+    if facade is not None and getattr(facade, "node_id", None):
+        try:
+            tools = await facade.get(
+                f"/aim/nodes/{facade.node_id}/tools",
+                cache_ttl_s=30.0,
+            )
+            published_tools = _safe_published_tools_context(tools)
+        except Exception:
+            degraded = True
+        try:
+            earnings = await facade.get(
+                "/aim/payouts/summary",
+                params={"node_id": facade.node_id, "range": "7d"},
+                cache_ttl_s=60.0,
+            )
+            earnings_summary = _safe_earnings_summary_context(earnings)
+        except Exception:
+            degraded = True
+
+    return (
+        {
+            "marketplace_registered": registered,
+            "published_tools": published_tools,
+            "marketplace_status": {
+                "registered": registered,
+                "node_id": config_node_id or None,
+                "published_tool_count": len(published_tools),
+                "earnings_summary": earnings_summary,
+            },
+        },
+        degraded,
+    )
+
+
+async def _gather_context(request: Request) -> tuple[dict[str, Any], bool]:
     store = request.app.state.store
     data_dir = _data_dir(store)
     context: dict[str, Any] = {}
@@ -210,6 +311,12 @@ def _gather_context(request: Request) -> tuple[dict[str, Any], bool]:
         context["discovered_tools"] = _safe_discovered_tools_context(
             read_store(data_dir, "discovered_tools") or {}
         )
+    except Exception:
+        degraded = True
+    try:
+        marketplace_context, marketplace_degraded = await _safe_marketplace_context(request)
+        context.update(marketplace_context)
+        degraded = degraded or marketplace_degraded
     except Exception:
         degraded = True
 
@@ -365,7 +472,7 @@ async def allai_chat(request: Request) -> JSONResponse:
         return _error_response(ErrorCode.SETUP_INCOMPLETE, "Node not yet configured", 412)
 
     allowed_tools = _allowed_tools(request)
-    context, degraded_context = _gather_context(request)
+    context, degraded_context = await _gather_context(request)
     payload: dict[str, Any] = {
         "message": body.message,
         "context": context,

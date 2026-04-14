@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from aim_node.core.crypto import DeviceCrypto
-from aim_node.management.allai import ProposedAction
+from aim_node.management.allai import ProposedAction, _gather_context
 from aim_node.management.app import create_management_app
 from aim_node.management.config_writer import write_config
 from aim_node.management.process import ProcessManager
@@ -34,18 +34,20 @@ def _create_keystore(data_dir: Path, passphrase: str) -> None:
     DeviceCrypto(config, passphrase=passphrase).get_or_create_keypairs()
 
 
-def _write_runtime_config(data_dir: Path) -> None:
+def _write_runtime_config(data_dir: Path, *, node_id: str | None = "node-backend-123") -> None:
+    core_config = {
+        "node_serial": "node-test-123",
+        "keystore_path": str(data_dir / "keystore.json"),
+        "data_dir": str(data_dir),
+        "market_api_url": "https://api.example.test",
+        "api_key": "secret-api-key",
+    }
+    if node_id:
+        core_config["node_id"] = node_id
     write_config(
         data_dir,
         {
-            "core": {
-                "node_serial": "node-test-123",
-                "node_id": "node-backend-123",
-                "keystore_path": str(data_dir / "keystore.json"),
-                "data_dir": str(data_dir),
-                "market_api_url": "https://api.example.test",
-                "api_key": "secret-api-key",
-            },
+            "core": core_config,
             "management": {
                 "setup_complete": True,
                 "setup_step": 5,
@@ -127,6 +129,22 @@ async def test_allai_chat_injects_context_redacts_and_forwards_to_facade(setup_c
 
     facade = MagicMock()
     facade.node_id = "node-backend-123"
+    facade.get = AsyncMock(
+        side_effect=[
+            {
+                "tools": [
+                    {"tool_name": "inspect", "status": "live"},
+                    {"name": "draft-helper", "status": "draft"},
+                    {"name": "skip-me", "status": "not_published"},
+                ]
+            },
+            {
+                "range": "7d",
+                "total_cents": 1234,
+                "currency": "USD",
+            },
+        ]
+    )
     facade.post = AsyncMock(
         return_value={
             "reply": "hello",
@@ -161,6 +179,18 @@ async def test_allai_chat_injects_context_redacts_and_forwards_to_facade(setup_c
             "status": "ok",
         }
     ]
+    assert payload["context"]["marketplace_registered"] is True
+    assert payload["context"]["published_tools"] == ["inspect", "draft-helper"]
+    assert payload["context"]["marketplace_status"] == {
+        "registered": True,
+        "node_id": "node-backend-123",
+        "published_tool_count": 2,
+        "earnings_summary": {
+            "range": "7d",
+            "total_cents": 1234,
+            "currency": "USD",
+        },
+    }
     assert "degraded_context" not in payload
     assert r.json()["conversation_id"] == "conv-1"
 
@@ -169,6 +199,7 @@ async def test_allai_chat_uses_default_allowed_tools_when_config_not_set(setup_c
     app, _, _ = setup_complete_app
     facade = MagicMock()
     facade.node_id = "node-backend-123"
+    facade.get = AsyncMock(side_effect=[{"tools": []}, {"range": "7d"}])
     facade.post = AsyncMock(
         return_value={
             "reply": "hello",
@@ -198,6 +229,7 @@ async def test_allai_chat_sets_degraded_context_when_store_lookup_fails(setup_co
     app, state, _ = setup_complete_app
     facade = MagicMock()
     facade.node_id = "node-backend-123"
+    facade.get = AsyncMock(side_effect=[{"tools": []}, {"range": "7d"}])
     facade.post = AsyncMock(
         return_value={
             "reply": "degraded",
@@ -226,6 +258,7 @@ async def test_allai_chat_caches_confirmation_actions(setup_complete_app):
     app, _, _ = setup_complete_app
     facade = MagicMock()
     facade.node_id = "node-backend-123"
+    facade.get = AsyncMock(side_effect=[{"tools": []}, {"range": "7d"}])
     facade.post = AsyncMock(
         return_value={
             "reply": "need approval",
@@ -256,6 +289,7 @@ async def test_allai_chat_auto_executes_allowed_actions(setup_complete_app):
     app, state, _ = setup_complete_app
     facade = MagicMock()
     facade.node_id = "node-backend-123"
+    facade.get = AsyncMock(side_effect=[{"tools": []}, {"range": "7d"}])
     facade.post = AsyncMock(
         side_effect=[
             {
@@ -294,6 +328,28 @@ async def test_allai_chat_auto_executes_allowed_actions(setup_complete_app):
     assert second_payload["tool_results"][0]["result"]["config"]["core"]["node_id"] == "node-backend-123"
     assert "api_key" not in second_payload["tool_results"][0]["result"]["config"]["core"]
     assert state._data_dir.exists()
+
+
+async def test_gather_context_marks_marketplace_unregistered_when_facade_missing(tmp_path: Path):
+    _write_runtime_config(tmp_path, node_id=None)
+    _create_keystore(tmp_path, passphrase="")
+    app, _, _ = _build_app(tmp_path)
+    app.state.facade = None
+
+    request = MagicMock()
+    request.app = app
+
+    context, degraded = await _gather_context(request)
+
+    assert degraded is False
+    assert context["marketplace_registered"] is False
+    assert context["published_tools"] == []
+    assert context["marketplace_status"] == {
+        "registered": False,
+        "node_id": None,
+        "published_tool_count": 0,
+        "earnings_summary": None,
+    }
 
 
 async def test_allai_confirm_approve_executes_cached_action(setup_complete_app):
