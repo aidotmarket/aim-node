@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import os
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Type, TypeVar
@@ -12,6 +15,7 @@ from typing import Type, TypeVar
 import httpx
 from cryptography.hazmat.primitives import serialization
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -43,6 +47,7 @@ from aim_node.management.schemas import (
     UnlockRequest,
     UnlockResponse,
 )
+from aim_node.management.state import NodeState
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +308,42 @@ async def provider_stop(request: Request) -> JSONResponse:
     return JSONResponse(ProviderStopResponse(stopped=True).model_dump())
 
 
+async def provider_restart(request: Request) -> JSONResponse:
+    process_mgr = request.app.state.process_mgr
+    await process_mgr.stop_provider()
+    await process_mgr.start_provider()
+    return JSONResponse(
+        {
+            "status": "restarted",
+            "dashboard": request.app.state.store.get_dashboard(),
+        }
+    )
+
+
+async def provider_reload(request: Request) -> JSONResponse:
+    store = request.app.state.store
+    store._load_config()
+    store.determine_node_state()
+
+    raw = read_config(store._data_dir)
+    try:
+        from aim_node.management.app import _load_core_config
+        from aim_node.management.facade import MarketplaceFacade
+
+        config = _load_core_config(raw)
+        if config is None:
+            raise ValueError("invalid config")
+        request.app.state.facade = MarketplaceFacade.create(config)
+    except Exception:
+        request.app.state.facade = None
+
+    process_mgr = request.app.state.process_mgr
+    if store.provider.running:
+        await process_mgr.stop_provider()
+        await process_mgr.start_provider()
+    return JSONResponse({"status": "reloaded"})
+
+
 async def provider_health(request: Request) -> JSONResponse:
     state = request.app.state.store
     data_dir: Path = state._data_dir
@@ -350,6 +391,47 @@ async def consumer_stop(request: Request) -> JSONResponse:
     return JSONResponse(ConsumerStopResponse(stopped=True).model_dump())
 
 
+async def lock_node(request: Request) -> JSONResponse:
+    store = request.app.state.store
+    process_mgr = request.app.state.process_mgr
+
+    if store.provider.running:
+        await process_mgr.stop_provider()
+    if hasattr(store, "consumer") and getattr(store.consumer, "running", False):
+        await process_mgr.stop_consumer()
+
+    os.environ.pop("AIM_KEYSTORE_PASSPHRASE", None)
+    with store._state_lock:
+        store._passphrase = None
+        store._locked = True
+        store._unlocked = False
+        store._node_state = NodeState.LOCKED
+
+    return JSONResponse({"status": "locked"})
+
+
+async def keypair_rotate(request: Request) -> JSONResponse:
+    store = request.app.state.store
+    data_dir = store._data_dir
+    keystore_path = data_dir / "keystore.json"
+    backup_path = data_dir / "keystore.json.bak"
+    if keystore_path.exists():
+        keystore_path.replace(backup_path)
+
+    passphrase = store.get_passphrase() or ""
+    crypto = _crypto_for(data_dir, passphrase=passphrase)
+    crypto.get_or_create_keypairs()
+    pub_keys = crypto.get_public_keys_b64()
+
+    facade = request.app.state.facade
+    if facade:
+        await facade.post(
+            "/aim/nodes/keypair",
+            json_body={"public_key": pub_keys[0]},
+        )
+    return JSONResponse({"status": "rotated"})
+
+
 # ---------- Sessions ----------
 
 
@@ -378,6 +460,38 @@ async def session_detail(request: Request) -> JSONResponse:
             created_at=session["created_at"],
         ).model_dump()
     )
+
+
+async def session_kill(request: Request) -> JSONResponse:
+    session_id = request.path_params["session_id"]
+    store = request.app.state.store
+    session = store.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"Session {session_id} not found")
+
+    process_mgr = request.app.state.process_mgr
+
+    session_mgr = getattr(process_mgr, "_consumer_session_mgr", None)
+    if session_mgr is not None:
+        try:
+            await session_mgr.close_session(session_id)
+        except Exception:
+            pass
+
+    provider_handler = getattr(process_mgr, "_provider_handler", None)
+    if provider_handler is not None:
+        task = provider_handler._session_tasks.pop(session_id, None)
+        transport = provider_handler._active_sessions.pop(session_id, None)
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if transport is not None:
+            with suppress(Exception):
+                await transport.close(reason="admin_kill")
+
+    store.remove_session(session_id)
+    return JSONResponse({"status": "killed", "session_id": session_id})
 
 
 # ---------- Unlock ----------

@@ -452,6 +452,97 @@ async def test_provider_stop_not_running_409(setup_complete_provider_app):
     assert r.status_code == 409
 
 
+# 24a
+async def test_provider_restart_cycles_and_returns_dashboard(setup_complete_provider_app):
+    app, state, _ = setup_complete_provider_app
+
+    async with _make_client(app) as client:
+        with (
+            patch.object(app.state.process_mgr, "stop_provider", new=AsyncMock()) as stop_provider,
+            patch.object(app.state.process_mgr, "start_provider", new=AsyncMock()) as start_provider,
+        ):
+            r = await client.post("/api/mgmt/provider/restart")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "restarted"
+    assert r.json()["dashboard"]["provider_running"] == state.get_dashboard()["provider_running"]
+    stop_provider.assert_awaited_once()
+    start_provider.assert_awaited_once()
+
+
+# 24b
+async def test_provider_reload_reloads_config_and_restarts_running_provider(setup_complete_provider_app):
+    app, state, _ = setup_complete_provider_app
+    state.provider.running = True
+
+    updated_config = {
+        "core": {
+            "node_serial": "node-test-123",
+            "node_id": "node-backend-123",
+            "keystore_path": str(state._data_dir / "keystore.json"),
+            "data_dir": str(state._data_dir),
+            "market_api_url": "https://api.changed.test",
+            "api_key": "changed-key",
+        },
+        "management": {
+            "setup_complete": True,
+            "setup_step": 5,
+            "mode": "provider",
+        },
+        "provider": {"adapter": {"endpoint_url": "http://127.0.0.1:9100/invoke"}},
+    }
+    write_config(state._data_dir, updated_config)
+
+    facade = MagicMock()
+    with patch("aim_node.management.facade.MarketplaceFacade.create", return_value=facade) as create_facade:
+        async with _make_client(app) as client:
+            with (
+                patch.object(app.state.process_mgr, "stop_provider", new=AsyncMock()) as stop_provider,
+                patch.object(app.state.process_mgr, "start_provider", new=AsyncMock()) as start_provider,
+            ):
+                r = await client.post("/api/mgmt/provider/reload")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "reloaded"
+    assert app.state.facade is facade
+    assert state.get_status()["setup_complete"] is True
+    create_facade.assert_called_once()
+    stop_provider.assert_awaited_once()
+    start_provider.assert_awaited_once()
+
+
+# 24c
+async def test_provider_reload_bad_config_clears_facade(setup_complete_provider_app):
+    app, state, _ = setup_complete_provider_app
+    app.state.facade = object()
+    state.provider.running = False
+    write_config(
+        state._data_dir,
+        {
+            "core": {
+                "node_serial": "node-test-123",
+                "keystore_path": str(state._data_dir / "keystore.json"),
+                "data_dir": str(state._data_dir),
+                "market_api_url": "https://api.changed.test",
+                "api_key": "changed-key",
+            },
+            "management": {
+                "setup_complete": True,
+                "setup_step": 5,
+                "mode": "provider",
+            },
+            "provider": {"adapter": {"endpoint_url": "http://127.0.0.1:9100/invoke"}},
+        },
+    )
+
+    async with _make_client(app) as client:
+        r = await client.post("/api/mgmt/provider/reload")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "reloaded"
+    assert app.state.facade is None
+
+
 # 24
 async def test_provider_health(setup_complete_provider_app, monkeypatch):
     app, *_ = setup_complete_provider_app
@@ -528,6 +619,38 @@ async def test_consumer_stop_not_running_409(setup_complete_app):
     assert r.status_code == 409
 
 
+# 28a
+async def test_lock_node_stops_provider_consumer_and_clears_passphrase(tmp_data_dir: Path):
+    _write_runtime_config(tmp_data_dir, mode="both")
+    _create_keystore(tmp_data_dir, passphrase="test123")
+    app, state, _ = _build_app(tmp_data_dir)
+    assert state.unlock("test123") is True
+    state.provider.running = True
+    state.consumer.running = True
+    os.environ["AIM_KEYSTORE_PASSPHRASE"] = "test123"
+
+    async with _make_client(app) as client:
+        with (
+            patch.object(app.state.process_mgr, "stop_provider", new=AsyncMock()) as stop_provider,
+            patch.object(app.state.process_mgr, "stop_consumer", new=AsyncMock()) as stop_consumer,
+        ):
+            r = await client.post("/api/mgmt/lock")
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "locked"
+    assert os.environ.get("AIM_KEYSTORE_PASSPHRASE") is None
+    assert state.get_passphrase() is None
+    assert state.node_state == NodeState.LOCKED
+    assert state.get_status()["locked"] is True
+    stop_provider.assert_awaited_once()
+    stop_consumer.assert_awaited_once()
+
+    async with _make_client(app) as client:
+        unlocked = await client.post("/api/mgmt/unlock", json={"passphrase": "test123"})
+    assert unlocked.status_code == 200
+    assert unlocked.json()["unlocked"] is True
+
+
 # 29
 async def test_sessions_empty_list(setup_complete_app):
     app, *_ = setup_complete_app
@@ -547,6 +670,78 @@ async def test_session_detail_not_found_404(setup_complete_app):
     assert body["code"] == "not_found"
     assert body["message"] == "Session not found"
     assert body["request_id"].startswith("req_")
+
+
+# 30a
+async def test_session_kill_closes_consumer_session_and_removes_snapshot(setup_complete_app):
+    app, state, pm = setup_complete_app
+    state.add_session(
+        SessionSnapshot(
+            session_id="consumer-1",
+            role="consumer",
+            state="active",
+            created_at=1234567890.0,
+        )
+    )
+    pm._consumer_session_mgr = MagicMock()
+    pm._consumer_session_mgr.close_session = AsyncMock()
+
+    async with _make_client(app) as client:
+        r = await client.delete("/api/mgmt/sessions/consumer-1")
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "killed", "session_id": "consumer-1"}
+    pm._consumer_session_mgr.close_session.assert_awaited_once_with("consumer-1")
+    assert state.get_session("consumer-1") is None
+
+
+# 30b
+async def test_session_kill_closes_provider_session_and_removes_snapshot(setup_complete_provider_app):
+    app, state, pm = setup_complete_provider_app
+    state.add_session(
+        SessionSnapshot(
+            session_id="provider-1",
+            role="provider",
+            state="active",
+            created_at=1234567890.0,
+        )
+    )
+
+    task = asyncio.create_task(asyncio.sleep(60))
+    transport = MagicMock()
+    transport.close = AsyncMock()
+    pm._provider_handler = type(
+        "ProviderHandlerStub",
+        (),
+        {
+            "_session_tasks": {"provider-1": task},
+            "_active_sessions": {"provider-1": transport},
+        },
+    )()
+
+    try:
+        async with _make_client(app) as client:
+            r = await client.delete("/api/mgmt/sessions/provider-1")
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    assert r.status_code == 200
+    transport.close.assert_awaited_once_with(reason="admin_kill")
+    assert state.get_session("provider-1") is None
+
+
+# 30c
+async def test_session_kill_missing_session_404(setup_complete_app):
+    app, *_ = setup_complete_app
+    async with _make_client(app) as client:
+        r = await client.delete("/api/mgmt/sessions/missing-session")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["code"] == "not_found"
+    assert body["message"] == "Session missing-session not found"
 
 
 # 31
@@ -588,6 +783,29 @@ async def test_keypair_info_no_keystore_404(fresh_app):
     async with _make_client(app) as client:
         r = await client.get("/api/mgmt/keypair")
     assert r.status_code == 404
+
+
+# 34a
+async def test_keypair_rotate_backs_up_keystore_and_posts_public_key(setup_complete_app):
+    app, state, _ = setup_complete_app
+    app.state.facade = MagicMock()
+    app.state.facade.post = AsyncMock()
+
+    before = (state._data_dir / "keystore.json").read_bytes()
+
+    async with _make_client(app) as client:
+        r = await client.post("/api/mgmt/keypair/rotate")
+
+    after = (state._data_dir / "keystore.json").read_bytes()
+    backup = (state._data_dir / "keystore.json.bak").read_bytes()
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "rotated"
+    assert before == backup
+    assert after != before
+    app.state.facade.post.assert_awaited_once()
+    assert app.state.facade.post.await_args.args == ("/aim/nodes/keypair",)
+    assert "public_key" in app.state.facade.post.await_args.kwargs["json_body"]
 
 
 # 35

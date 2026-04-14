@@ -181,6 +181,31 @@ class TestProcessManagerAsync(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(NotRunningError):
                 await manager.stop_provider()
 
+    async def test_provider_handler_reference_lifecycle(self):
+        _write_runtime_config(self.tmpdir, mode="provider")
+        _create_keystore(self.tmpdir, passphrase="")
+        state = ProcessStateStore(self.tmpdir)
+        manager = ProcessManager(state, self.tmpdir)
+
+        trust_channel = MagicMock()
+        trust_channel.run = AsyncMock(side_effect=asyncio.CancelledError())
+        adapter = MagicMock()
+        handler = MagicMock()
+        handler.start = AsyncMock()
+        handler.stop = AsyncMock()
+
+        with (
+            patch("aim_node.management.process.TrustChannelClient", return_value=trust_channel),
+            patch("aim_node.management.process.HttpJsonAdapter", return_value=adapter),
+            patch("aim_node.management.process.ProviderSessionHandler", return_value=handler),
+        ):
+            await manager.start_provider()
+            self.assertIs(manager._provider_handler, handler)
+            await manager.stop_provider()
+
+        self.assertIsNone(manager._provider_handler)
+        handler.stop.assert_awaited_once()
+
     async def test_consumer_construction_uses_market_client(self):
         _write_runtime_config(self.tmpdir, mode="consumer")
         _create_keystore(self.tmpdir, passphrase="")

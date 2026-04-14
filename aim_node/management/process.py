@@ -48,6 +48,7 @@ class ProcessManager:
         self._state = state
         self._data_dir = data_dir
         self._provider_task: Optional[asyncio.Task] = None
+        self._provider_handler: Optional[ProviderSessionHandler] = None
         self._consumer_proxy: Optional[LocalProxy] = None
         self._consumer_session_mgr: Optional[SessionManager] = None
         self._trust_channel: Optional[TrustChannelClient] = None
@@ -90,6 +91,7 @@ class ProcessManager:
         self._trust_channel = TrustChannelClient(config)
         adapter = HttpJsonAdapter(adapter_config)
         handler = ProviderSessionHandler(config, adapter, self._trust_channel)
+        self._provider_handler = handler
 
         async def _run():
             try:
@@ -104,6 +106,7 @@ class ProcessManager:
                 pass
             finally:
                 await handler.stop()
+                self._provider_handler = None
                 if self._trust_task:
                     self._trust_task.cancel()
                 with self._state._state_lock:
