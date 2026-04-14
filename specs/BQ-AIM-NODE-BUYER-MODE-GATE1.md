@@ -1,119 +1,102 @@
-# BQ-AIM-NODE-BUYER-MODE — Gate 1 Design Review
+# BQ-AIM-NODE-BUYER-MODE — Gate 1 Design Review (R2)
 
 ## Summary
 
-Add buyer/consumer functionality to the AIM Node management UI — tool discovery/browsing from the marketplace, consumer proxy start/stop, test invocation of remote tools, and session monitoring for buyer-side connections. Requires both backend enhancements (discovery endpoint, test invoke) and frontend pages.
+Add buyer/consumer functionality to the AIM Node management UI: tool discovery via the existing marketplace discover endpoint, consumer proxy management, and local consumer session monitoring. Scoped to what's buildable with current backend contracts.
 
 ## Current State
 
-### Backend
-- Consumer proxy: `aim_node/consumer/proxy.py` + `session_manager.py` — functional proxy that connects to remote providers
+### Backend (exists)
+- `POST /api/mgmt/marketplace/discover` → facade proxy to `POST /aim/discover/search` — **marketplace discovery already works**
 - `POST /api/mgmt/consumer/start` → starts consumer proxy, returns `{ started, proxy_port }`
 - `POST /api/mgmt/consumer/stop` → stops consumer proxy
-- `GET /api/mgmt/marketplace/sessions` → facade proxy to `/aim/sessions?node_id={id}&range={range}` — includes both provider and consumer sessions
-- No dedicated tool discovery/browse endpoint on the management API (marketplace catalog is accessed via facade)
+- `GET /api/mgmt/sessions` → local in-memory sessions with `{ id, role, state, created_at, peer_fingerprint, bytes_transferred }`
+- `GET /api/mgmt/marketplace/sessions?range={range}` → facade proxy to `/aim/sessions` — **seller-scoped**, not usable for buyer-side data
 
 ### Frontend
 - No buyer-specific pages exist
-- `/sessions` placeholder exists but is generic
-- `/dashboard` shows `consumer_running` status
+- Consumer start/stop routes exist but no UI
 
 ## Design
 
-### New Navigation
+### Navigation
 
-Add to AppLayout sidebar (below existing items or as a collapsible "Buyer" section):
-- **Discover** — browse marketplace tool catalog
-- **My Connections** — active consumer sessions and connected providers
+Add to AppLayout sidebar:
+- **Discover** (`/discover`) — browse marketplace tools
+- **Connections** (`/connections`) — consumer proxy + local sessions
 
 ### Page 1: Discover (`/discover`)
 
-**Purpose**: Browse available tools on the marketplace that this node can connect to as a buyer.
-
-**Data source**: `GET /api/mgmt/marketplace/tools/catalog` — **NEW backend endpoint** that proxies to a backend marketplace catalog route (to be confirmed — likely `/aim/tools/catalog` or `/aim/tools/search`). Returns a list of published tools from other providers.
-
-**Note**: The exact backend catalog/search endpoint must be confirmed at Gate 2. If no public catalog endpoint exists yet, this page defers until the backend ships one. The spec assumes one will exist.
+Uses existing `POST /api/mgmt/marketplace/discover` (already routes to `/aim/discover/search`).
 
 **Layout**:
-- Search bar (query param to backend)
-- Grid of tool cards: name, provider name, description (truncated), pricing, trust score badge
-- Click → tool detail modal or page: full description, schemas, pricing details, "Connect" button
-- Connect button: initiates consumer proxy start + session negotiation (flow TBD at Gate 2 — depends on session connectivity contracts)
+- Search input + search button
+- Results grid: tool name, provider (if available), description (truncated), pricing info
+- Click card → expand or modal with full details, schemas, pricing
+- **No "Connect" action in v1** — connection flow (session negotiation) is complex and depends on trust channel contracts. Deferred. Users can copy tool details for manual connection.
 
-### Page 2: My Connections (`/connections`)
+**Request shape**: `POST /api/mgmt/marketplace/discover` with JSON body `{ query?: string }` (other params TBD — Gate 2 inspects actual `/aim/discover/search` contract).
 
-**Purpose**: Monitor active consumer-side sessions and manage connections.
+**Empty state**: "Search the marketplace to find tools from other providers."
 
-**Data source**: `GET /api/mgmt/sessions` (local sessions, filtered client-side to `role === "consumer"`) + `GET /api/mgmt/marketplace/sessions` (marketplace-tracked sessions)
+### Page 2: Connections (`/connections`)
 
-**Layout**:
-- Consumer proxy status card: running/stopped, proxy port, start/stop button
-- Active connections table: session_id, remote provider, tool name, state, bytes transferred, latency
-- Click row → session detail (existing `/sessions/{id}` route)
+**Consumer Proxy Status Card** (top):
+- Status: Running (green) / Stopped (gray) — from `DashboardResponse.consumer_running`
+- Proxy port (from consumer start response, stored in Zustand)
+- Start / Stop button
 
-### Backend Enhancements
+**Local Consumer Sessions** (below):
+- Source: `GET /api/mgmt/sessions` — client-side filter to `role === "consumer"`
+- Table: ID (truncated), State badge, Peer Fingerprint (truncated), Bytes Transferred, Created At
+- **Note**: Local sessions do NOT include provider name, tool name, or latency — these fields are not in the `SessionItem` schema. Show only what's available.
+- Click row → `/sessions/{id}` for detail view (existing route)
 
-| Enhancement | Description | Effort |
-|-------------|-------------|--------|
-| `GET /api/mgmt/marketplace/tools/catalog` | Facade proxy to backend catalog/search endpoint. Paginated. Cache 120s. | 1h (if backend endpoint exists) |
-| `POST /api/mgmt/consumer/test-invoke` | Test-call a remote tool via consumer proxy. Params: `{ provider_node_id, tool_name, arguments }`. Returns response + latency. | 3h |
-| Extend `GET /api/mgmt/sessions` | Add `role` filter query param for client convenience (optional — can filter client-side) | 0.5h |
-
-**Key dependency**: The marketplace catalog endpoint on the ai.market backend. If this doesn't exist, the Discover page cannot be built. Gate 2 must verify.
+**Not included**: Marketplace sessions (`/api/mgmt/marketplace/sessions`) are seller-scoped and not usable for buyer-side data. Buyer-side marketplace session tracking requires a new backend endpoint (deferred).
 
 ### Edge States
 
 | Condition | Behavior |
 |-----------|----------|
-| Consumer proxy not running | Connections page shows "Start consumer proxy to connect to providers." with Start button. |
-| No marketplace catalog endpoint | Discover page shows "Tool catalog coming soon." |
-| Facade unavailable | Both pages show registration prompt. |
-| No active consumer sessions | Connections table shows "No active connections." |
-| Test invoke fails | Show error with response details (timeout, connection refused, tool error). |
+| Facade unavailable | Both pages show registration prompt |
+| Consumer not running | Connections shows "Start consumer proxy" card. Sessions table empty. |
+| No discover results | "No tools found. Try a different search." |
+| No consumer sessions | "No active consumer sessions." |
+| Discover endpoint error | Error card with retry |
 
-### Refresh Strategy
+### Deferred (Not In This BQ)
 
-- Catalog: `staleTime: 120_000`, manual refresh button
-- Sessions: `staleTime: 15_000`, `refetchInterval: 30_000`
-- Consumer status: `staleTime: 10_000`, `refetchInterval: 15_000`
-
-## Out of Scope
-
-- Spend tracking/budgeting (deferred — no spend-cap API exists yet)
-- Subscription management (future — requires billing integration)
-- Auto-connect / favorites
-- Price comparison
+- Connect/invoke flow (session negotiation via trust channel)
+- Buyer-side marketplace session tracking (needs backend endpoint)
+- Spend tracking / budgeting (no spend-cap API exists)
+- Subscription management
+- Test invoke of remote tools through consumer proxy
 
 ## Dependencies
 
-- `aim_node/consumer/proxy.py` + `session_manager.py` — consumer proxy (exists)
-- `aim_node/management/routes.py` — consumer start/stop (exist)
-- `aim_node/management/marketplace.py` — sessions facade (exists)
-- **Backend dependency**: marketplace catalog/search endpoint — **must be confirmed at Gate 2**
+- `POST /api/mgmt/marketplace/discover` (exists)
+- `POST /api/mgmt/consumer/start`, `POST /api/mgmt/consumer/stop` (exist)
+- `GET /api/mgmt/sessions` (exists)
+- `GET /api/mgmt/status` — `consumer_running` field (exists)
 - Frontend: React Query (installed), Zustand (installed)
+- No new backend endpoints required
 
 ## Estimated Effort
 
 | Area | Hours |
 |------|-------|
-| Backend: catalog proxy endpoint | 1 |
-| Backend: test-invoke endpoint | 3 |
-| Backend: tests | 2 |
-| Frontend: Discover page (catalog, search, tool cards) | 4 |
-| Frontend: Connections page (proxy status, sessions table) | 3 |
-| Frontend: Navigation updates | 1 |
-| Frontend: Edge states | 1.5 |
-| Tests: frontend component tests | 2.5 |
-| **Total** | **18** |
-
-**Note**: If backend catalog endpoint doesn't exist, Discover page portion (~5h) defers, reducing to ~13h.
+| Frontend: Discover page (search + results grid + expand) | 4 |
+| Frontend: Connections page (proxy card + sessions table) | 3 |
+| Frontend: Navigation updates + routing | 1 |
+| Frontend: Edge states | 1 |
+| Tests: component tests | 2 |
+| **Total** | **11** |
 
 ## Success Criteria
 
-1. Discover page shows marketplace tool catalog (if backend endpoint available)
+1. Discover page sends search to existing discover endpoint and renders results
 2. Consumer proxy start/stop works from Connections page
-3. Active consumer sessions displayed with real-time refresh
-4. Test invoke returns results with latency
-5. All edge states handled
-6. Navigation updates work correctly
-7. Existing tests remain green, new tests added
+3. Local consumer sessions displayed (filtered by role)
+4. All edge states handled
+5. No new backend endpoints needed
+6. Existing tests green, new tests added

@@ -1,157 +1,148 @@
-# BQ-AIM-NODE-EARNINGS — Gate 1 Design Review (R2)
+# BQ-AIM-NODE-EARNINGS — Gate 1 Design Review (R3)
 
 ## Summary
 
-Replace `EarningsPlaceholder` with a revenue tracking page. All three backend routes exist as facade proxies but **response shapes are unverified** — the UI is designed around a normalization layer that maps any reasonable backend response into display-ready structures. Gate 2 must inspect live endpoints and finalize mappings.
+Replace `EarningsPlaceholder` with a revenue tracking page. All three backend routes exist as facade proxies. Backend Pydantic schemas are now confirmed from `ai-market-backend/app/schemas/aim_seller.py`.
 
-## Backend Routes (exist — `aim_node/management/marketplace.py`)
+## Backend Routes & Confirmed Schemas
 
-| Endpoint | Method | Params | Facade Target | Notes |
-|----------|--------|--------|---------------|-------|
-| `/api/mgmt/marketplace/earnings` | GET | `range` (default `7d`) | `/aim/payouts/summary?node_id={id}&range={range}` | Summary with cache 60s |
-| `/api/mgmt/marketplace/earnings/history` | GET | **none** | `/aim/payouts/history` | Full history, no range filter, cache 60s |
-| `/api/mgmt/marketplace/settlements` | GET | `range` (default `30d`) | `/aim/settlements?node_id={id}&range={range}` | Settlements, cache 60s |
+| Endpoint | Facade Target | Response Schema |
+|----------|---------------|-----------------|
+| `GET /api/mgmt/marketplace/earnings?range={range}` | `/aim/payouts/summary` | `EarningsSummary` |
+| `GET /api/mgmt/marketplace/earnings/history` | `/aim/payouts/history` | Bare list or `{ payouts: [...] }` (normalize both) |
+| `GET /api/mgmt/marketplace/settlements?range={range}` | `/aim/settlements` | `SettlementListResponse` |
 
-**Key**: Payout history has **no range param** — it returns all history. Range filtering only applies to summary and settlements.
+**Confirmed backend schemas** (from `app/schemas/aim_seller.py`):
+
+```python
+class EarningsPeriodEntry(BaseModel):
+    date: str
+    amount_cents: int
+    calls: int
+
+class EarningsByListing(BaseModel):
+    listing_id: UUID
+    amount_cents: int
+    calls: int
+
+class EarningsSummary(BaseModel):
+    total_earned_cents: int
+    total_paid_cents: int
+    pending_cents: int
+    period_earnings: list[EarningsPeriodEntry]
+    totals_by_listing: list[EarningsByListing]
+
+class SettlementListItem(BaseModel):
+    session_id: UUID
+    amount: int
+    buyer_amount: int
+    seller_amount: int
+    commission: int
+    status: str
+    settled_at: Optional[datetime] = None
+
+class SettlementListResponse(BaseModel):
+    settlements: list[SettlementListItem]
+    total: int; limit: int; offset: int
+```
+
+**Note**: Payout history has **no range param** — returns full history. Range selector only affects summary and settlements.
 
 ## Design
 
 ### Layout
 
-Single page at `/earnings`. Three zones stacked vertically.
-
-**Range selector** (top-right): 7d / 30d / 90d (default 30d). Affects Zone 1 (summary) and Zone 3 (settlements) only. Zone 2 (payout history) is unaffected — always shows full history.
+Single page at `/earnings`. Three zones. Range selector (7d/30d/90d, default 30d) at top-right — affects Zone 1 and Zone 3 only.
 
 ### Zone 1: Earnings Summary
 
-Row of KPI cards from `/api/mgmt/marketplace/earnings?range={range}`.
+Four KPI cards from `EarningsSummary`:
 
-**Normalization layer** (frontend utility):
-```typescript
-interface EarningsSummary {
-  grossAmount: number | null;
-  netAmount: number | null;
-  currency: string;
-  sessionCount: number | null;
-  payoutCount: number | null;
-  range: string;
-}
+| Card | Field | Format |
+|------|-------|--------|
+| Total Earned | `total_earned_cents` | `$X.XX` (cents → dollars) |
+| Total Paid | `total_paid_cents` | `$X.XX` |
+| Pending | `pending_cents` | `$X.XX` |
+| Listings | `totals_by_listing.length` | Count |
 
-function normalizeEarningsSummary(raw: Record<string, unknown>): EarningsSummary {
-  // Map from any of: gross_usd/gross_cents, net_usd/net_cents, total_usd/total_cents
-  // Fallback: null for missing fields → card shows "—"
-}
-```
+Below cards: **Period Earnings mini-chart** (optional) — if `period_earnings` has >1 entry, render a simple bar chart (reuse Recharts from Dashboard BQ if available). Shows daily `amount_cents` over the range. If empty or single entry, omit.
 
-This approach handles unknown response shapes gracefully. Each KPI card renders the value if present or "—" if null. Hints from `allai.py`'s `_safe_earnings_summary_context`: `range`, `currency`, `gross_usd`, `net_usd`, `total_usd`, `gross_cents`, `net_cents`, `total_cents`, `sessions`, `sessions_count`, `payouts`, `payouts_count`.
-
-Cards:
-- **Gross Revenue**: `grossAmount` formatted as currency
-- **Net Revenue**: `netAmount` formatted as currency
-- **Sessions**: `sessionCount`
-- **Payouts**: `payoutCount`
-
-Any card with null value shows "—" with tooltip "Data unavailable for this field."
+**Per-listing breakdown**: collapsible table below KPIs showing `totals_by_listing` — listing_id (truncated), amount (cents→dollars), calls.
 
 ### Zone 2: Payout History
 
 Table from `/api/mgmt/marketplace/earnings/history`.
 
-**Normalization layer**:
+Normalization: accept bare list `[...]` or `{ payouts: [...] }`. Each entry mapped to:
 ```typescript
 interface PayoutEntry {
-  id: string;
-  date: string;
-  amount: number | null;
-  currency: string;
+  id: string;        // payout_id or first available id-like field
+  date: string;      // created_at / timestamp / date
+  amountCents: number;
   status: string;
-  [key: string]: unknown;  // preserve unknown fields for detail view
-}
-
-function normalizePayoutHistory(raw: unknown): PayoutEntry[] {
-  // Accept array directly or extract from .items/.payouts/.data/.history
-  // Each entry: find id/payout_id, date/created_at/timestamp, amount/amount_usd/amount_cents, status
-  // Unknown fields preserved for expandable row detail
+  [key: string]: unknown;  // preserve extra fields for expand view
 }
 ```
 
-Table columns: Date (sortable, default desc), Amount, Status badge, ID (truncated). Click row expands to show all raw fields.
-
-Client-side pagination: 10 per page.
-
-**No range filtering** — this endpoint returns all history. If list is very long, pagination handles it.
+Table: Date (sortable, desc default), Amount ($X.XX), Status badge, ID. Click row → expand raw fields. Client-side pagination: 10/page. No range filtering.
 
 ### Zone 3: Settlements
 
-Table from `/api/mgmt/marketplace/settlements?range={range}`.
+Table from `SettlementListResponse`:
 
-**Normalization layer** (same pattern as payouts):
-```typescript
-interface SettlementEntry {
-  id: string;
-  date: string;
-  amount: number | null;
-  currency: string;
-  status: string;
-  [key: string]: unknown;
-}
-```
+| Column | Field | Format |
+|--------|-------|--------|
+| Session ID | `session_id` | Truncated UUID |
+| Amount | `amount` | Cents → $X.XX |
+| Seller Share | `seller_amount` | Cents → $X.XX |
+| Commission | `commission` | Cents → $X.XX |
+| Status | `status` | Badge (pending/completed/failed) |
+| Settled At | `settled_at` | Formatted datetime or "—" if null |
 
-Table columns: Date, Amount, Status (pending/completed/failed), ID. Client-side pagination: 10 per page.
+Client-side pagination: 10/page. Respects range selector.
 
 ### Edge States
 
 | Condition | Behavior |
 |-----------|----------|
-| Facade unavailable (412) | Full-page: "Register with the marketplace to track earnings." Link to `/tools`. |
-| Empty summary response | KPI cards all show "—" with "No earnings for this period." |
-| Empty history/settlements | Table shows "No payouts yet." / "No settlements yet." |
-| Normalization fails (unexpected shape) | Zone-level error: "Could not parse earnings data. Please contact support." with raw JSON in expandable detail for debugging. |
-| API error (non-412) | Zone-level error card with retry button. Other zones still render independently. |
-| Node in setup_incomplete/locked | Router redirects before reaching page. |
+| Facade unavailable (412) | Full-page: "Register with the marketplace to track earnings." |
+| Empty summary (all zeros) | Cards show $0.00, empty listings table, empty period chart |
+| Empty history/settlements | "No payouts yet." / "No settlements yet." |
+| Normalization fails | Zone-level error with raw JSON in expandable detail |
+| API error (non-412) | Zone-level error with retry. Other zones render independently. |
 
 ### Refresh Strategy
 
 - Summary + settlements: `staleTime: 60_000`, `refetchInterval: 120_000`, re-fetch on range change
-- Payout history: `staleTime: 60_000`, `refetchInterval: 120_000` (no range dependency)
-
-### Chart (Deferred)
-
-Daily earnings chart deferred to v2 — depends on whether any endpoint returns daily granularity, which is unknown until Gate 2.
+- Payout history: `staleTime: 60_000`, `refetchInterval: 120_000`
 
 ## Out of Scope
 
 - Buyer-side spend tracking (BQ-AIM-NODE-BUYER-MODE)
-- Per-tool revenue breakdown (requires backend support not confirmed)
-- Export to CSV
-- Invoice generation
+- Export to CSV, invoice generation
 
 ## Dependencies
 
-- Backend facade routes: all 3 exist, read-only
-- Frontend: React Query (installed)
-- No new dependencies required
+- Backend facade routes (all 3 exist, read-only)
+- Frontend: React Query (installed), Recharts (if added by Dashboard BQ — optional for period chart)
 
 ## Estimated Effort
 
 | Area | Hours |
 |------|-------|
-| Gate 2: live endpoint inspection + finalize normalizers | 1.5 |
-| Frontend: Normalization layer (3 normalizers + tests) | 2 |
-| Frontend: Earnings summary cards | 1.5 |
-| Frontend: Payout history table with pagination/sort/expand | 2.5 |
-| Frontend: Settlements table with pagination | 2 |
-| Frontend: Range selector + edge states | 1.5 |
-| Tests: normalizer unit tests + component tests | 2 |
-| **Total** | **13** |
+| Frontend: KPI cards + per-listing breakdown | 2.5 |
+| Frontend: Payout history table + normalizer | 2.5 |
+| Frontend: Settlements table | 2 |
+| Frontend: Range selector + edge states + period chart | 2 |
+| Tests: normalizer + component tests | 2 |
+| **Total** | **11** |
 
 ## Success Criteria
 
-1. Earnings page loads and attempts all 3 backend endpoints
-2. Normalization layer handles unknown response shapes gracefully (null fields show "—")
-3. Range selector correctly filters summary and settlements (not history)
-4. Tables are paginated and sortable
-5. Parse failures surface clearly with raw data for debugging
+1. KPI cards show `total_earned_cents`, `total_paid_cents`, `pending_cents` formatted as dollars
+2. Per-listing breakdown renders `totals_by_listing`
+3. Range selector filters summary + settlements, not history
+4. Tables paginated and sortable
+5. Payout history normalizer handles both bare list and wrapped formats
 6. All edge states handled
-7. Responsive layout
-8. Existing tests remain green, new tests added
+7. Existing tests green, new tests added
