@@ -53,9 +53,9 @@ Modify:
 Target behavior:
 
 1. Normalize the caller-supplied Ed25519 public key into a base64 string.
-2. `POST /api/v1/aim/nodes/register/challenge` with `{ public_key, endpoint_url }`
+2. `POST /api/v1/aim/nodes/register/challenge` with `{ public_key, endpoint_url, mode }`
 3. Sign the returned `challenge` with the node Ed25519 private key
-4. `POST /api/v1/aim/nodes/register` with `{ public_key, endpoint_url, serial, challenge, pop_signature }`
+4. `POST /api/v1/aim/nodes/register` with `{ public_key, endpoint_url, mode, challenge, pop_signature }`
 
 Implementation notes:
 
@@ -73,6 +73,7 @@ async def register_challenge(
     self,
     public_key: str | bytes,
     endpoint_url: str,
+    mode: str,
 ) -> dict[str, Any]:
     ...
 
@@ -80,7 +81,7 @@ async def register_node(
     self,
     public_key: str | bytes,
     endpoint_url: str,
-    serial: str,
+    mode: str,
     private_key: ed25519.Ed25519PrivateKey,
 ) -> dict[str, Any]:
     ...
@@ -94,9 +95,11 @@ Required change:
 
 - After `finalize_setup(...)` writes the local config and before autostart, perform seller registration when `mode in ("provider", "both")`
 - Load the node keypair from the existing keystore using `_crypto_for(...)`
-- Read `core.node_serial` and provider endpoint URL from config
+- Read `mode` from setup config and provider endpoint URL from config
 - Call `MarketClient.register_node(...)`
 - Persist the returned backend `node_id` into `config.toml` under `core.node_id`
+
+- Passphrase handling: `request.app.state.state_manager.get_passphrase()` returns the in-memory passphrase that was stored during `unlock()` (see `aim_node/management/state.py` line 181). If the keystore is passphrase-protected, pass this value to `DeviceCrypto(config, passphrase=passphrase)` when loading the keypair. If `get_passphrase()` returns `None`, the keystore is unencrypted and can be loaded directly. This avoids re-prompting the user — the passphrase is already held in process memory from the keypair-generation step.
 
 This is required because the publish UI depends on the existing marketplace facade, and `MarketplaceFacade.create()` already requires `config.node_id`.
 
@@ -187,7 +190,8 @@ Challenge request:
 POST /api/v1/aim/nodes/register/challenge
 {
   "public_key": "<base64-ed25519-public-key>",
-  "endpoint_url": "https://upstream.example.com/mcp"
+  "endpoint_url": "https://upstream.example.com/mcp",
+  "mode": "seller"
 }
 ```
 
@@ -206,7 +210,7 @@ POST /api/v1/aim/nodes/register
 {
   "public_key": "<base64-ed25519-public-key>",
   "endpoint_url": "https://upstream.example.com/mcp",
-  "serial": "<core.node_serial>",
+  "mode": "seller",
   "challenge": "...",
   "pop_signature": "<base64url-signature>"
 }
@@ -224,6 +228,56 @@ interface RegisterNodeResponse {
 ```
 
 Only `node_id` is mandatory for this BQ. Do not spec or require any ai.market-side contract change.
+
+### Marketplace Tool Payloads
+
+#### Publish Tool (via local proxy)
+
+Local route: `POST /api/mgmt/marketplace/tools/publish`
+Proxied to: `POST /api/v1/aim/nodes/{node_id}/tools/publish`
+
+The frontend assembles this payload from local tool data + user inputs in PublishFlow:
+
+```json
+{
+  "listing_id": "<UUID — selected or created listing>",
+  "tool_name": "<from local tool scan>",
+  "version": "<from local tool scan>",
+  "input_schema": {},
+  "output_schema": {},
+  "nl_description": "<user-written or AI-generated description>",
+  "pricing_formula": {"model": "per_call", "price_cents": 10},
+  "execution_mode": "sync",
+  "task_taxonomy_tags": ["optional", "tags"],
+  "sample_io_pairs": [{"input": {}, "output": {}}],
+  "intended_use": "<optional>",
+  "limitations_and_known_failures": "<optional>",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "benchmark_evidence": null
+}
+```
+
+Required fields: `listing_id`, `tool_name`, `version`, `input_schema`, `output_schema`, `nl_description`.
+All other fields are optional.
+
+Response: `{ id, node_id, listing_id, tool_name, version, status, created_at }`
+
+#### Update Tool (via local proxy)
+
+Local route: `PUT /api/mgmt/marketplace/tools/{tool_id}`
+Proxied to: `PUT /api/v1/aim/nodes/{node_id}/tools/{tool_id}`
+
+```json
+{
+  "nl_description": "<updated description>",
+  "pricing_formula": {"model": "per_call", "price_cents": 15},
+  "input_schema": {},
+  "output_schema": {}
+}
+```
+
+All fields optional — only include changed fields. Response: `{ tool_id, updated: true }`
 
 ### Frontend Local Tool Contracts
 
@@ -571,6 +625,7 @@ Ship criteria:
 
 Scope:
 
+- **Depends on Slice A.** If the node has not completed registration (no `node_id` in config), marketplace proxy routes return `412 SETUP_INCOMPLETE`. The ToolsListPage and ToolDetailPage must handle this by showing a banner: 'Complete node registration to manage marketplace tools' with a link to the setup/publish flow. This degraded state uses only the local tool scan data from `/api/mgmt/tools`.
 - replace placeholders
 - render local tools and existing marketplace state
 - validation UX
@@ -654,6 +709,13 @@ Integration:
 - `setup_finalize()` in `both` mode behaves the same
 - `setup_finalize()` in `consumer` mode does not call seller registration
 - seller registration failure returns normalized error and does not persist `core.node_id`
+
+#### High-Risk Integration Tests (added per Gate 2 R1 mandate)
+
+- **Passphrase-protected keystore finalize**: Test `setup_finalize()` with a passphrase-protected keystore. Verify `state_manager.get_passphrase()` is used to load the keypair, and registration succeeds with a signed challenge.
+- **Facade rebuild after node_id persist**: After `setup_finalize()` persists `node_id` to config and rebuilds `request.app.state.facade`, verify the next request to `/api/mgmt/marketplace/node` succeeds (not 412).
+- **412 SETUP_INCOMPLETE UI handling**: Mount ToolsListPage without a registered node. Verify the page shows the registration banner instead of an error. Verify the "register" CTA navigates correctly.
+- **Challenge/register exact payload shape**: Unit test `MarketClient.register_challenge()` and `register_node()` to verify they send exactly `{ endpoint_url, public_key, mode }` and `{ endpoint_url, public_key, mode, challenge, pop_signature }` respectively — no extra fields, no missing fields.
 
 ### Slice B Tests
 
@@ -740,4 +802,3 @@ Total target: 28-46 tests
 - No direct frontend calls to ai.market
 - No ai.market backend contract changes
 - No redesign of the setup wizard UI outside the finalize integration point
-
