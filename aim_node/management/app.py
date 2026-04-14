@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +12,7 @@ from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
 from aim_node.management.config_writer import read_config
@@ -21,6 +22,12 @@ from aim_node.management.errors import (
     make_error,
 )
 from aim_node.management.facade import MarketplaceFacade
+from aim_node.management.logs import (
+    install_ring_buffer_handler,
+    logs_stream_ws,
+    logs_tail,
+    remove_ring_buffer_handler,
+)
 from aim_node.management.marketplace import (
     discover,
     earnings_history,
@@ -36,6 +43,12 @@ from aim_node.management.marketplace import (
     tools_publish,
     traces,
     trust_events,
+)
+from aim_node.management.metrics import (
+    MetricsCollector,
+    MetricsMiddleware,
+    metrics_summary,
+    metrics_timeseries,
 )
 from aim_node.management.middleware import CSRFMiddleware
 from aim_node.management.process import (
@@ -117,6 +130,10 @@ def _routes() -> list[Route]:
         ),
         Route("/api/mgmt/unlock", unlock, methods=["POST"]),
         Route("/api/mgmt/keypair", keypair_info, methods=["GET"]),
+        Route("/api/mgmt/logs", logs_tail, methods=["GET"]),
+        WebSocketRoute("/api/mgmt/logs/stream", logs_stream_ws),
+        Route("/api/mgmt/metrics/summary", metrics_summary, methods=["GET"]),
+        Route("/api/mgmt/metrics/timeseries", metrics_timeseries, methods=["GET"]),
         Route("/api/mgmt/tools", tools_list_local, methods=["GET"]),
         Route("/api/mgmt/tools/discover", tools_discover, methods=["POST"]),
         Route("/api/mgmt/tools/{tool_id}", tools_detail, methods=["GET"]),
@@ -254,6 +271,8 @@ def create_management_app(
     """
 
     data_dir = Path(data_dir)
+    log_handler = install_ring_buffer_handler()
+    metrics = MetricsCollector(data_dir)
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
@@ -263,6 +282,8 @@ def create_management_app(
         app.state.process_mgr = process_mgr
         app.state.remote_bind = remote_bind
         app.state.session_token = None
+        app.state.log_handler = log_handler
+        app.state.metrics = metrics
         try:
             raw_config = read_config(data_dir)
             core_cfg = _load_core_config(raw_config)
@@ -272,9 +293,18 @@ def create_management_app(
         except Exception:
             app.state.facade = None
             logger.info("MarketplaceFacade not initialized — node not yet configured")
+        flush_task = asyncio.create_task(metrics.flush_loop())
         try:
             yield
         finally:
+            metrics.sync_active_sessions(len(state.get_sessions()))
+            flush_task.cancel()
+            try:
+                await flush_task
+            except asyncio.CancelledError:
+                pass
+            await metrics.flush()
+            remove_ring_buffer_handler(log_handler)
             try:
                 await process_mgr.shutdown()
             except Exception:  # pragma: no cover
@@ -308,5 +338,8 @@ def create_management_app(
     app.state.remote_bind = remote_bind
     app.state.session_token = None
     app.state.facade = None
+    app.state.log_handler = log_handler
+    app.state.metrics = metrics
     app.add_middleware(CSRFMiddleware)
+    app.add_middleware(MetricsMiddleware)
     return app
