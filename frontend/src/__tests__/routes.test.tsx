@@ -6,8 +6,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppLayout } from '@/layouts/AppLayout';
 import { SetupLayout } from '@/layouts/SetupLayout';
 import { DashboardPlaceholder } from '@/pages/placeholders/DashboardPlaceholder';
-import { ToolsPlaceholder } from '@/pages/placeholders/ToolsPlaceholder';
-import { ToolDetailPlaceholder } from '@/pages/placeholders/ToolDetailPlaceholder';
 import { EarningsPlaceholder } from '@/pages/placeholders/EarningsPlaceholder';
 import { SessionsPlaceholder } from '@/pages/placeholders/SessionsPlaceholder';
 import { SessionDetailPlaceholder } from '@/pages/placeholders/SessionDetailPlaceholder';
@@ -16,6 +14,8 @@ import { SettingsPlaceholder } from '@/pages/placeholders/SettingsPlaceholder';
 import { NotFound } from '@/pages/NotFound';
 import { SetupIndexRedirect } from '@/router';
 import { UnlockPage } from '@/pages/setup/UnlockPage';
+import { ToolsListPage } from '@/pages/tools/ToolsListPage';
+import { ToolDetailPage } from '@/pages/tools/ToolDetailPage';
 
 const originalFetch = globalThis.fetch;
 const mockFetch = vi.fn();
@@ -29,14 +29,60 @@ function jsonResponse(data: unknown, status = 200) {
 
 beforeEach(() => {
   globalThis.fetch = mockFetch;
-  mockFetch.mockResolvedValue(
-    jsonResponse({
-      setup_complete: false,
-      locked: false,
-      unlocked: true,
-      current_step: 0,
-    }),
-  );
+  mockFetch.mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+
+    if (url.includes('/api/mgmt/setup/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          setup_complete: false,
+          locked: false,
+          unlocked: true,
+          current_step: 0,
+        }),
+      );
+    }
+
+    if (url.includes('/api/mgmt/tools/tool-123')) {
+      return Promise.resolve(
+        jsonResponse({
+          tool_id: 'tool-123',
+          name: 'route.tool',
+          version: '1.0.0',
+          description: 'Tool detail route payload',
+          input_schema: { type: 'object' },
+          output_schema: { type: 'object' },
+          validation_status: 'pending',
+          last_scanned_at: '2026-04-14T12:00:00Z',
+          last_validated_at: null,
+        }),
+      );
+    }
+
+    if (url.includes('/api/mgmt/tools')) {
+      return Promise.resolve(
+        jsonResponse({
+          scanned_at: '2026-04-14T12:00:00Z',
+          tools: [
+            {
+              tool_id: 'tool-123',
+              name: 'route.tool',
+              version: '1.0.0',
+              description: 'Tool list route payload',
+              validation_status: 'passed',
+              last_scanned_at: '2026-04-14T12:00:00Z',
+            },
+          ],
+        }),
+      );
+    }
+
+    if (url.includes('/api/mgmt/marketplace/tools')) {
+      return Promise.resolve(jsonResponse({ tools: [] }));
+    }
+
+    return Promise.reject(new Error(`Unhandled URL: ${url}`));
+  });
 });
 
 afterEach(() => {
@@ -59,8 +105,8 @@ const routes = [
     element: <AppLayout />,
     children: [
       { path: 'dashboard', element: <DashboardPlaceholder /> },
-      { path: 'tools', element: <ToolsPlaceholder /> },
-      { path: 'tools/:id', element: <ToolDetailPlaceholder /> },
+      { path: 'tools', element: <ToolsListPage /> },
+      { path: 'tools/:toolId', element: <ToolDetailPage /> },
       { path: 'earnings', element: <EarningsPlaceholder /> },
       { path: 'sessions', element: <SessionsPlaceholder /> },
       { path: 'sessions/:id', element: <SessionDetailPlaceholder /> },
@@ -92,15 +138,15 @@ describe('Route rendering', () => {
   it('renders tools page', async () => {
     renderRoute('/tools');
     await waitFor(() =>
-      expect(screen.getByText('Manage your registered MCP tools.')).toBeInTheDocument(),
+      expect(
+        screen.getByText('Manage your local tools and track marketplace publish status.'),
+      ).toBeInTheDocument(),
     );
   });
 
   it('renders tool detail page', async () => {
-    renderRoute('/tools/123');
-    await waitFor(() =>
-      expect(screen.getByText('Configure and monitor a specific tool.')).toBeInTheDocument(),
-    );
+    renderRoute('/tools/tool-123');
+    await waitFor(() => expect(screen.getByText('route.tool')).toBeInTheDocument());
   });
 
   it('renders earnings page', async () => {

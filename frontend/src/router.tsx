@@ -5,8 +5,6 @@ import { Spinner } from '@/components/ui';
 import { useSetupWizard } from '@/hooks/useSetupWizard';
 import { useNodeStore } from '@/store/nodeStore';
 import { DashboardPlaceholder } from '@/pages/placeholders/DashboardPlaceholder';
-import { ToolsPlaceholder } from '@/pages/placeholders/ToolsPlaceholder';
-import { ToolDetailPlaceholder } from '@/pages/placeholders/ToolDetailPlaceholder';
 import { EarningsPlaceholder } from '@/pages/placeholders/EarningsPlaceholder';
 import { SessionsPlaceholder } from '@/pages/placeholders/SessionsPlaceholder';
 import { SessionDetailPlaceholder } from '@/pages/placeholders/SessionDetailPlaceholder';
@@ -19,6 +17,8 @@ import { ConnectionStep } from '@/pages/setup/ConnectionStep';
 import { UpstreamStep } from '@/pages/setup/UpstreamStep';
 import { ReviewStep } from '@/pages/setup/ReviewStep';
 import { UnlockPage } from '@/pages/setup/UnlockPage';
+import { ToolsListPage } from '@/pages/tools/ToolsListPage';
+import { ToolDetailPage } from '@/pages/tools/ToolDetailPage';
 
 export function RootRedirect() {
   const loading = useNodeStore((state) => state.loading);
@@ -84,8 +84,8 @@ export const router = createBrowserRouter([
     element: <AppLayout />,
     children: [
       { path: 'dashboard', element: <DashboardPlaceholder /> },
-      { path: 'tools', element: <ToolsPlaceholder /> },
-      { path: 'tools/:id', element: <ToolDetailPlaceholder /> },
+      { path: 'tools', element: <ToolsListPage /> },
+      { path: 'tools/:toolId', element: <ToolDetailPage /> },
       { path: 'earnings', element: <EarningsPlaceholder /> },
       { path: 'sessions', element: <SessionsPlaceholder /> },
       { path: 'sessions/:id', element: <SessionDetailPlaceholder /> },
