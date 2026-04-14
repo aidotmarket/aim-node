@@ -40,7 +40,11 @@ export function ReviewStep() {
         mode,
         api_url: apiUrl,
         api_key: apiKey,
-        upstream_url: upstreamSkipped ? undefined : upstreamUrl.trim() || undefined,
+        upstream_url:
+          upstreamUrl.trim() &&
+          (!upstreamSkipped || mode === 'provider' || mode === 'both')
+            ? upstreamUrl.trim()
+            : undefined,
       });
 
       if (response.ok) {
@@ -66,7 +70,7 @@ export function ReviewStep() {
       </div>
 
       <Card className="space-y-5" padding="md">
-        <div className="flex items-start justify-between gap-3 border-b border-[#E8E8E8] pb-4">
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 pb-4">
           <div className="space-y-1">
             <p className="text-sm font-medium text-brand-text">Node identity</p>
             <p className="font-mono text-sm text-brand-text">{fingerprint || 'Not generated yet'}</p>
@@ -80,7 +84,7 @@ export function ReviewStep() {
           </Link>
         </div>
 
-        <div className="flex items-start justify-between gap-3 border-b border-[#E8E8E8] pb-4">
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 pb-4">
           <div className="space-y-2">
             <p className="text-sm font-medium text-brand-text">ai.market connection</p>
             <div className="flex flex-wrap items-center gap-2">
@@ -139,7 +143,7 @@ export function ReviewStep() {
           ].map((option) => (
             <label
               key={option.value}
-              className="flex cursor-pointer items-center gap-3 rounded-brand border border-[#E8E8E8] p-4 text-sm text-brand-text"
+              className="flex cursor-pointer items-center gap-3 rounded-brand border border-gray-200 p-4 text-sm text-brand-text"
             >
               <input
                 type="radio"
@@ -147,7 +151,7 @@ export function ReviewStep() {
                 value={option.value}
                 checked={mode === option.value}
                 onChange={() => setMode(option.value as 'provider' | 'consumer' | 'both')}
-                className="h-4 w-4 accent-[#3F51B5]"
+                className="h-4 w-4 accent-indigo-600"
               />
               {option.label}
             </label>
@@ -162,7 +166,7 @@ export function ReviewStep() {
       )}
 
       <div className="flex justify-end">
-        <Button variant="primary" className="bg-[#3F51B5]" onClick={handleFinalize} loading={isFinalizing}>
+        <Button variant="primary" className="bg-indigo-600 hover:bg-indigo-600/90" onClick={handleFinalize} loading={isFinalizing}>
           Finalize Setup
         </Button>
       </div>

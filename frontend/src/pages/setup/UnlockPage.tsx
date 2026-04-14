@@ -74,7 +74,7 @@ export function UnlockPage() {
           <Button
             type="submit"
             variant="primary"
-            className="bg-[#3F51B5]"
+            className="bg-indigo-600 hover:bg-indigo-600/90"
             loading={isSubmitting}
             disabled={!passphrase.trim()}
           >
