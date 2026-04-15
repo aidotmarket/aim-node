@@ -35,11 +35,13 @@ Uses existing `POST /api/mgmt/marketplace/discover` (already routes to `/aim/dis
 - Click card → expand or modal with full details, schemas, pricing
 - **No "Connect" action in v1** — connection flow (session negotiation) is complex and depends on trust channel contracts. Deferred. Users can copy tool details for manual connection.
 
-**Request shape**: `POST /api/mgmt/marketplace/discover` with JSON body `{ query?: string }` (other params TBD — Gate 2 inspects actual `/aim/discover/search` contract).
+**Request shape**: `POST /api/mgmt/marketplace/discover` uses the existing `DiscoverRequest` contract from [docs/openapi-facade.yaml](/Users/max/Projects/ai-market/aim-node/docs/openapi-facade.yaml:604): `{ query?: string | null, category?: string | null, tags?: string[], limit?: number | null, price_max_usd?: number | null, capability_filters?: object | null }`. The v1 UI can ship with a query-only search control, but the spec should treat the broader facade request shape as known and available rather than TBD.
 
 **Empty state**: "Search the marketplace to find tools from other providers."
 
 ### Page 2: Connections (`/connections`)
+
+Built from local management endpoints only: `GET /api/mgmt/status`, `POST /api/mgmt/consumer/start`, `POST /api/mgmt/consumer/stop`, and `GET /api/mgmt/sessions`. This page does not depend on marketplace facade availability.
 
 **Consumer Proxy Status Card** (top):
 - Status: Running (green) / Stopped (gray) — from `DashboardResponse.consumer_running`
@@ -58,7 +60,7 @@ Uses existing `POST /api/mgmt/marketplace/discover` (already routes to `/aim/dis
 
 | Condition | Behavior |
 |-----------|----------|
-| Facade unavailable | Both pages show registration prompt |
+| Facade unavailable | `/discover` shows registration prompt or unavailable state. `/connections` continues to work because it uses local management endpoints only. |
 | Consumer not running | Connections shows "Start consumer proxy" card. Sessions table empty. |
 | No discover results | "No tools found. Try a different search." |
 | No consumer sessions | "No active consumer sessions." |
