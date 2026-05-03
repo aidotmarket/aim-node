@@ -1,7 +1,7 @@
 # BQ-AIM-NODE-PYTHON-SDK-CONTRACT-RECONCILIATION — Gate 1 Design (v1)
 
 **Author:** vulcan_direct (S549)
-**Status:** AUTHORED v2 (R1 mandates folded), awaiting R2 verification
+**Status:** AUTHORED v3 (DS R1 nits folded), Gate 1 APPROVED at v2 + nits
 **Parent finding:** BQ-AIM-NODE-GATEWAY-V2 Chunk 8 strict xfail at `tests/gateway_v2/test_e2e_paid_buyer_agent_flow.py:68`
 
 ## §1 Problem statement
@@ -148,7 +148,11 @@ Old field names removed. If any caller (internal scripts, ops tooling, or
 any other Python consumer) imports the old shapes, fix the caller as part
 of the chunk that ships the change and document the import path migration.
 Frontend is not a caller of the Python SDK (frontend uses the TS SDK; see
-§3 out-of-scope) and is therefore not affected.
+§3 out-of-scope) and is therefore not affected. The migration documentation
+deliverable referenced in this AC is verified by manual inspection at Gate
+3 (consistent with the documentation-only AC pattern adopted in
+BQ-COUNCIL-BUILD-VERIFICATION-FULL-CI-SUITE Gate 1 §5); no automated test
+covers documentation existence.
 
 ## §5 Test plan
 
@@ -191,6 +195,19 @@ while backend `requested_units` may be billed-units count) could produce
 silent wrong behavior. Mitigation: each shape change includes a comment
 documenting semantic mapping; E2E canonical flow at AC-5 catches semantic
 mismatches in practice.
+
+R6. **Backend auth surface changes during this BQ's window.** Distinct
+from R4 (general model drift), this risk specifically covers buyer-agent
+auth token shape, account-id field naming, or signature/principal scheme
+changes on the backend that would break SDK auth flows silently even when
+all other envelope shapes align. The Chunk 8 E2E test exercises a Bearer
+`api_key` flow against backend ASGI fixtures; any mid-flight backend auth
+shape change invalidates that test path. Mitigation: AC-8 (zero backend
+changes during this BQ) extends explicitly to backend auth surfaces; if
+backend auth shape must change, defer this BQ until the auth contract is
+stable. Gate 2 chunking inventory must verify the auth surface against the
+current backend `app/gateway_v2/surfaces/buyer_*.py` files at chunking
+time.
 
 ## §7 Open questions for Gate 2 chunking
 
