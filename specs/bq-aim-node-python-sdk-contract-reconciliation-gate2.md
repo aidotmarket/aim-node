@@ -1,7 +1,9 @@
 # BQ-AIM-NODE-PYTHON-SDK-CONTRACT-RECONCILIATION — Gate 2 Chunking (v1)
 
 **Author:** vulcan_direct (S550)
-**Status:** AUTHORED v1, AWAITING_CROSS_REVIEW
+**Status:** AUTHORED v2 (AG R1 mandate folds), AWAITING_R2_VERIFICATION
+
+**R1 fold record:** AG R1 (task d3deef30) returned REQUEST_CHANGES with two findings, both folded in v2: (F1) §4 Chunk A A1 expanded from six-unaudited to all-nine SDK surfaces per Gate 1 R1 mitigation language; (F2) §4 per-chunk deliverables added an explicit migration-documentation bullet per Gate 1 AC-10. DeepSeek R1 (task df8c81d9) returned a context-unavailable finding (spec text not delivered to DS via auto-resolution layer); re-dispatched at v2 with inline spec text.
 **Gate 1 ref:** specs/bq-aim-node-python-sdk-contract-reconciliation-gate1.md @ aim-node 9f256ca
 **Repo at chunking time:** aim-node HEAD 9f256ca; ai-market-backend HEAD 9389b48
 
@@ -83,11 +85,18 @@ Rationale:
 ### Chunk A — Drift inventory & TS audit (no production code)
 
 **Deliverables:**
-- A1. Field-level drift table for each of the six unaudited Python surface
-  files (`buyer.py` non-verify-provider methods, `connect.py`, `invoke.py`,
-  `meter.py`, `receipt.py`, `publish.py`) vs the corresponding backend
-  Pydantic models. Surfaces with no drift recorded as "PARITY — no chunk
-  needed."
+- A1. Field-level drift table for each of the **nine** SDK Python surface
+  files (`discover.py`, `quote.py`, `buyer.py` (all four buyer methods),
+  `connect.py`, `invoke.py`, `meter.py`, `receipt.py`, `publish.py`) vs
+  the corresponding backend Pydantic models. This includes re-auditing the
+  three Gate-1-identified drifted surfaces (`discover`, `quote`,
+  verify-provider in `buyer`) for any additional drift not caught at Gate 1
+  source inspection (response shapes, secondary fields, error envelopes),
+  per Gate 1 R1 mitigation ("Gate 2 chunking task §3 explicitly audits all
+  python/aim_node/gateway_v2/*.py files against backend counterparts").
+  Surfaces with no additional drift recorded as "PARITY — no chunk needed"
+  (or "FIRST-DRIFT-CONFIRMED — chunk needed" for surfaces already in the
+  Gate 1 known-drift list).
 - A2. Auth-surface verification per R6: SDK Bearer-token construction,
   `buyer_account_id` field naming, and any signature/principal scheme used
   by SDK methods that hit `buyer_*.py` surfaces. Verified against backend
@@ -129,6 +138,11 @@ Each chunk follows the same template:
   new shapes (no test deleted; only shape expectations updated, per AC-9).
 - Internal-caller fixes inline within the same commit if any caller
   imports the old shape (per AC-10, no compat shim).
+- Migration documentation note in the chunk commit body capturing every
+  import-path change for internal Python callers, per Gate 1 AC-10. The
+  note enumerates each old→new symbol or field rename touched in the
+  chunk. Verified at Gate 3 by manual inspection per Gate 1 §5
+  documentation-only AC pattern; no automated test required.
 - Chunk-local commit message references AC numbers covered.
 
 **Per-chunk acceptance:**
