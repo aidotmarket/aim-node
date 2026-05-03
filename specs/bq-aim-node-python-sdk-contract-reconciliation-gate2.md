@@ -1,9 +1,11 @@
 # BQ-AIM-NODE-PYTHON-SDK-CONTRACT-RECONCILIATION — Gate 2 Chunking (v1)
 
 **Author:** vulcan_direct (S550)
-**Status:** AUTHORED v2 (AG R1 mandate folds), AWAITING_R2_VERIFICATION
+**Status:** AUTHORED v3 (AG R2 + DS R1' nit folds), GATE_2_APPROVED
 
 **R1 fold record:** AG R1 (task d3deef30) returned REQUEST_CHANGES with two findings, both folded in v2: (F1) §4 Chunk A A1 expanded from six-unaudited to all-nine SDK surfaces per Gate 1 R1 mitigation language; (F2) §4 per-chunk deliverables added an explicit migration-documentation bullet per Gate 1 AC-10. DeepSeek R1 (task df8c81d9) returned a context-unavailable finding (spec text not delivered to DS via auto-resolution layer); re-dispatched at v2 with inline spec text.
+
+**R2 / R1-prime fold record:** AG R2 (task 93daef01) returned APPROVE_WITH_NITS verifying both R1 folds landed; one stale-text nit in §4 Chunk A Acceptance ("six unaudited" → corrected to "nine SDK Python"). DeepSeek R1-prime (task 666893e3, re-dispatched with inline spec text after R1 context-unavailable failure) returned APPROVE_WITH_NITS; one wording-clarity observation about AC-7 placement (now made explicit in §4 A3 as the only audit-AC delivered in Chunk A by design). Both nits folded in v3; Vulcan-direct adjudication treats both as non-blocking per S549 learning. No R3 round.
 **Gate 1 ref:** specs/bq-aim-node-python-sdk-contract-reconciliation-gate1.md @ aim-node 9f256ca
 **Repo at chunking time:** aim-node HEAD 9f256ca; ai-market-backend HEAD 9389b48
 
@@ -105,15 +107,17 @@ Rationale:
   under `aim-node/src/gateway_v2/` against the same eleven backend
   surfaces. Verdict written into Chunk A §A3 as either "no drift found"
   (closes AC-7) or "drift found in [list]" (triggers sibling BQ filing).
+  **AC-7 is satisfied by Chunk A (analysis-only); Chunks B-H/Z carry no
+  AC-7 deliverable. AC-7 is the only Gate 1 AC delivered outside the
+  production-code chunk set, by design — it is an audit AC, not a
+  reshape AC.**
 - A4. Final chunk list: which of B–H ship, which are dropped as PARITY,
   ordering relative to xfail-removal chunk.
 
 **Format:** `specs/bq-aim-node-python-sdk-contract-reconciliation-gate2-chunkA.md`
 committed to aim-node. No code modifications. No test changes.
 
-**Acceptance:** A1 table covers all six unaudited surfaces; A2 records
-verified-against-commit SHA for backend; A3 lists TS audit verdict; A4
-finalises the downstream chunk list.
+**Acceptance:** A1 table covers all nine SDK Python surfaces (re-confirms three known + first audit on six); A2 records verified-against-commit SHA for backend; A3 lists TS audit verdict; A4 finalises the downstream chunk list.
 
 ### Chunks B–H — Per-surface SDK alignment (parameterized by Chunk A)
 
