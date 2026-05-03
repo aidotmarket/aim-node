@@ -1,7 +1,7 @@
 # BQ-AIM-NODE-PYTHON-SDK-CONTRACT-RECONCILIATION — Gate 1 Design (v1)
 
 **Author:** vulcan_direct (S549)
-**Status:** AUTHORED, awaiting cross-review
+**Status:** AUTHORED v2 (R1 mandates folded), awaiting R2 verification
 **Parent finding:** BQ-AIM-NODE-GATEWAY-V2 Chunk 8 strict xfail at `tests/gateway_v2/test_e2e_paid_buyer_agent_flow.py:68`
 
 ## §1 Problem statement
@@ -144,9 +144,11 @@ flow file) updated to assert the new envelope shapes. No test deleted; only
 shape expectations updated.
 
 AC-10. No silent backward-compat shim in the SDK. The reshape is direct.
-Old field names removed. If any caller (internal frontend, scripts) imports
-the old shapes, fix the caller as part of the chunk that ships the change
-and document the import path migration.
+Old field names removed. If any caller (internal scripts, ops tooling, or
+any other Python consumer) imports the old shapes, fix the caller as part
+of the chunk that ships the change and document the import path migration.
+Frontend is not a caller of the Python SDK (frontend uses the TS SDK; see
+§3 out-of-scope) and is therefore not affected.
 
 ## §5 Test plan
 
@@ -163,18 +165,20 @@ T8. Other Gateway v2 surfaces touched in Gate 2 — one shape test per surface.
 
 R1. **Additional drift surfaces beyond the three named.** SDK files
 `buyer.py`, `connect.py`, `invoke.py`, `meter.py`, `receipt.py` not yet
-audited. Mitigation: AC-7 inventory and Gate 2 chunking task §3 explicitly
-audits all `python/aim_node/gateway_v2/*.py` files against backend
-counterparts.
+audited. Mitigation: Gate 2 chunking task §3 explicitly audits all
+`python/aim_node/gateway_v2/*.py` files against backend counterparts. (AC-7
+covers the TypeScript SDK audit specifically and is not the mitigation for
+Python drift inventory.)
 
 R2. **TypeScript SDK has same drift.** The frontend uses the TS SDK; if it
 has analogous drift, a future production incident is plausible. Mitigation:
 AC-7 forces audit; sibling BQ filed if drift found.
 
-R3. **Internal callers depend on legacy shapes.** Scripts, frontend code,
-or other tools may import the old SDK names. Mitigation: AC-10 forbids
-shims; chunks include caller fixes inline. Gate 2 chunking inventories
-callers.
+R3. **Internal callers depend on legacy shapes.** Internal Python scripts,
+ops tooling, or other Python tools may import the old SDK names. (Frontend
+is not affected; frontend uses the TS SDK per §3 out-of-scope.) Mitigation:
+AC-10 forbids shims; chunks include caller fixes inline. Gate 2 chunking
+inventories callers.
 
 R4. **Backend model changes during this BQ's work.** If backend Gateway v2
 models drift while this BQ is in flight, rework is needed. Mitigation:
