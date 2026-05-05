@@ -1,3 +1,10 @@
+// FUTURE-BUILD ARTIFACT
+// TypeScript source. No build pipeline exists for src/gateway_v2/ as of Chunk 10.
+// Compilation, packaging, and Dockerfile integration will be addressed in a follow-up BQ
+// (BQ-AIM-NODE-GATEWAY-V2-TYPESCRIPT-BUILD-PIPELINE).
+// Defined in specs/bq-aim-node-gateway-v2-gate2.md Chunk 10 (DIST Packaging Compatibility)
+// for surface contract; build infrastructure deferred.
+
 export type GatewayV2HealthCheckName =
   | "backend_reachability"
   | "auth_bootstrap_state"
@@ -51,6 +58,7 @@ export const gatewayV2HealthChecks: GatewayV2HealthCheck[] = [
   {
     name: "update_channel",
     requiredForModes: ["buyer_local", "seller_edge"],
+    // PLACEHOLDER: update_channel health check returns ready-state placeholder until update mechanism lands in Chunk 11+. Tracking: TBD if separate BQ needed.
     failureImpact: "Gateway-V2 cannot verify that the installed runtime follows the pinned update path.",
   },
   {

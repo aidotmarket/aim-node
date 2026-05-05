@@ -1,3 +1,10 @@
+// FUTURE-BUILD ARTIFACT
+// TypeScript source. No build pipeline exists for src/gateway_v2/ as of Chunk 10.
+// Compilation, packaging, and Dockerfile integration will be addressed in a follow-up BQ
+// (BQ-AIM-NODE-GATEWAY-V2-TYPESCRIPT-BUILD-PIPELINE).
+// Defined in specs/bq-aim-node-gateway-v2-gate2.md Chunk 10 (DIST Packaging Compatibility)
+// for surface contract; build infrastructure deferred.
+
 export type GatewayV2InstallMode = "buyer_local" | "seller_edge";
 
 export type GatewayV2SurfaceName =
