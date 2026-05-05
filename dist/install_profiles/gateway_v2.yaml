@@ -1,0 +1,55 @@
+runtime: gateway-v2
+schema_version: 1
+package_boundary: aim-node-gateway-v2-runtime
+install_products:
+  - gateway-v2-runtime
+modes:
+  buyer_local:
+    description: Local buyer runtime for Gateway-V2 discovery, access, invocation, metering, and receipt flows.
+    components:
+      - local_runtime
+      - auth_bootstrap
+      - connector_registry
+      - health_checks
+      - update_path
+      - local_secret_storage_policy
+    credential_policy: local_only
+    secret_store: local://aim-node/secrets/
+  seller_edge:
+    description: Seller edge runtime for Gateway-V2 publish, connect, invoke, meter, receipt, and provider verification flows.
+    components:
+      - local_runtime
+      - auth_bootstrap
+      - connector_registry
+      - health_checks
+      - update_path
+      - local_secret_storage_policy
+    credential_policy: local_only
+    secret_store: local://aim-node/secrets/
+surfaces:
+  - discover
+  - quote
+  - connect
+  - invoke
+  - meter
+  - receipt
+  - publish
+  - verify_provider
+  - request_access
+  - estimate_cost
+  - create_billing_session
+health_checks:
+  - backend_reachability
+  - auth_bootstrap_state
+  - connector_registry_readiness
+  - meter_buffer_status
+  - update_channel
+  - local_secret_store_availability
+update_path:
+  channel: gateway-v2-stable
+  strategy: runtime_manifest_pinned
+  rollback: previous_runtime_manifest
+credentials:
+  runtime_credentials: local_only
+  committed_credentials: false
+  test_mode_keys: dev_fixtures_only

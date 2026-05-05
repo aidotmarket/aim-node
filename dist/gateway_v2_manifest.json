@@ -1,0 +1,71 @@
+{
+  "runtime": "gateway-v2",
+  "schema_version": 1,
+  "package_boundary": "aim-node-gateway-v2-runtime",
+  "modes": [
+    "buyer_local",
+    "seller_edge"
+  ],
+  "install_products": [
+    "gateway-v2-runtime"
+  ],
+  "packaged_components": [
+    "local_runtime",
+    "auth_bootstrap",
+    "connector_registry",
+    "update_path",
+    "health_checks",
+    "local_secret_storage_policy"
+  ],
+  "surface_names": [
+    "discover",
+    "quote",
+    "connect",
+    "invoke",
+    "meter",
+    "receipt",
+    "publish",
+    "verify_provider",
+    "request_access",
+    "estimate_cost",
+    "create_billing_session"
+  ],
+  "health_checks": [
+    "backend_reachability",
+    "auth_bootstrap_state",
+    "connector_registry_readiness",
+    "meter_buffer_status",
+    "update_channel",
+    "local_secret_store_availability"
+  ],
+  "credential_policy": {
+    "runtime_credentials": "local_only",
+    "secret_ref_prefix": "local://aim-node/secrets/",
+    "committed_credentials": false,
+    "test_mode_keys": "dev_fixtures_only"
+  },
+  "update_path": {
+    "channel": "gateway-v2-stable",
+    "strategy": "runtime_manifest_pinned",
+    "rollback": "previous_runtime_manifest"
+  },
+  "auth_bootstrap": {
+    "state_file": "local://aim-node/auth/bootstrap_state",
+    "requires_local_secret_store": true
+  },
+  "connector_registry": {
+    "source": "src/gateway_v2/connector_registry.ts",
+    "required_states": [
+      "not_loaded",
+      "ready",
+      "degraded"
+    ]
+  },
+  "local_runtime": {
+    "entrypoints": [
+      "src/gateway_v2/health.ts",
+      "src/gateway_v2/connector_registry.ts"
+    ],
+    "meter_buffer": "local_fail_closed"
+  }
+}
