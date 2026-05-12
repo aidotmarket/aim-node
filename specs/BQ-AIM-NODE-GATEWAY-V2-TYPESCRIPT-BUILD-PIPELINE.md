@@ -3,7 +3,7 @@
 **Status:** Gate 1 design-only · **Priority:** P1 · **Pillar:** AIM-Node (product)
 **Filed:** S561 (2026-05-05) · **Authored:** S609.W round 4 · **Branch:** spec/bq-aim-node-gateway-v2-typescript-build-pipeline-gate1
 **Sibling context:** S561 cross-review of gateway packaging — AG + DS both raised HIGH finding on TS files lacking build path; documentation fold landed in that chunk; this BQ holds the structural fix.
-**Fold history:** v1 = Worker S609.W round 4 ship at SHA 7366fb62. v2 = Worker S610.W round 2 R2 fold manifest + Primary S610 drain. MP R1 (task 1b72eee6) returned APPROVE_WITH_MANDATES with 7 substantive findings (3 HIGH + 2 MEDIUM + 2 LOW) and proposed revisions inline; folded verbatim per stash manifest. AG R1 (task 1dd1beba) returned ReadTimeout — pending re-dispatch; supplement if extras surface.
+**Fold history:** v1 = Worker S609.W round 4 ship at SHA 7366fb62. v2 = Worker S610.W round 2 R2 fold manifest + Primary S610 drain. MP R1 (task 1b72eee6) returned APPROVE_WITH_MANDATES with six substantive findings and proposed revisions inline; folded verbatim per stash manifest. AG R1 (task 1dd1beba) returned ReadTimeout — pending re-dispatch; supplement if extras surface. v3 = R3 fold for AG R2 rollback-plan mandate (task 85de7d07) + MP R2 nits (task d2a071ee).
 
 ## §0 Honest posture
 
@@ -162,7 +162,20 @@ COPY --from=builder /build/dist /usr/local/share/aim-node/gateway_v2/dist
 7. **AC7 — Strict mode enabled with `receipt.ts:134` cast resolved (MP R1 fold S610 R2):** TypeScript strict mode (`strict: true` in tsconfig) is enabled. Prior to enabling, `src/gateway_v2/receipt.ts:134` is updated to replace the `Record<string, unknown>` cast to `MeteringReceiptSummary` with either (a) a typed-narrowing pattern via a runtime guard function, OR (b) an explicit `as unknown as MeteringReceiptSummary` cast with a TODO comment referencing this BQ — Gate 2 picks. `tsc --strict --noEmit` against the source tree returns zero errors. Pre-Gate-2 MP R1 evidence (task `1b72eee6`) confirmed strict mode does NOT pass as-is on v1.
 8. **AC8 — `install.sh:88-110` verification block exercises compiled TS (MP R1 fold S610 R2):** The verification block at `install.sh:88-110`, after the existing management health curl, runs a container-side Node probe: `docker exec <container> node -e "require('/usr/local/share/aim-node/gateway_v2/dist/health'); require('/usr/local/share/aim-node/gateway_v2/dist/connector_registry')"`. Both requires must resolve and load cleanly; non-zero exit fails the install. The probe path matches the runtime artifact path locked in sec 4 (`/usr/local/share/aim-node/gateway_v2/dist`).
 
-## §7 Risks
+## §7 Rollback plan
+
+Use this rollback if the new install image fails in production or if the TS build pipeline breaks the repository build path.
+
+1. **Revert the TS build pipeline:** Remove `src/gateway_v2/package.json` and `src/gateway_v2/tsconfig.json`. Remove any generated `src/gateway_v2/dist/` artifacts if Gate 2 committed them or if local build output was staged by mistake. Restore the prior source-only `src/gateway_v2/` layout.
+2. **Revert Dockerfile multi-stage additions:** Remove the dedicated gateway TS builder stage, the `COPY --from=<gateway-ts-builder> ... /usr/local/share/aim-node/gateway_v2/dist` line, and any runtime-stage Node install added only for executing compiled gateway JS. Restore the Dockerfile to the previous single-stage install-image behavior for gateway assets while preserving unrelated Dockerfile changes.
+3. **Revert the CI gate:** Remove `.github/workflows/typescript-build-gate.yml` if Gate 2 creates a dedicated workflow, or delete the gateway TS build/type-check/source-without-artifact steps if Gate 2 extends an existing workflow. In particular, remove the orphan `.ts` to `.js` artifact check so CI no longer fails on tracked `src/gateway_v2/**/*.ts` source without emitted JavaScript.
+
+**Rollback success criteria:**
+- The single-stage Docker build succeeds without the gateway TS builder stage or copied `dist/` artifacts.
+- `install.sh` passes its legacy probe path without the compiled TS Node `require(...)` checks from AC8.
+- CI no longer runs or fails the no-orphan `.ts` to `.js` source-without-artifact check.
+
+## §8 Risks
 
 1. **R1 — Strict-mode failures.** Existing TS source may not compile under strict mode out of the box (`any`-typed values, implicit return types). *Mitigation:* AC7 allows transitional relaxation; Gate 2 builder pins the choice based on compilation evidence.
 2. **R2 — Multi-stage Dockerfile bloats image.** Adding Node-builder stage adds ~150MB to image at build time. Stage 2 only copies compiled output. *Mitigation:* multi-stage ensures only `dist/` ships; build-time bloat is acceptable.
@@ -170,17 +183,16 @@ COPY --from=builder /build/dist /usr/local/share/aim-node/gateway_v2/dist
 4. **R4 — ESM-vs-CJS mismatch.** §3.2 picks commonjs as default; if entry-points are invoked as ESM, switch is mandatory. *Mitigation:* Gate 2 builder confirms invocation pattern before locking module system.
 5. **R5 — Sequencing decision pending Max input.** BQ body's next_action says "S562: confer with Max on whether to ship the TS build pipeline before further gateway chunks land, or queue behind Chunks 11–12 first." Gate 1 design is independent of this; Gate 2 build dispatch waits for sequencing answer. *Mitigation:* this BQ's spec proceeds; Gate 2 dispatch gates on Max's sequencing call.
 
-## §8 Open questions for Gate 2
+## §9 Open questions for Gate 2
 
 1. **[GATE-2 CONFIRMATION REQUIRED]** What is the full inventory of `.ts` files under `src/gateway_v2/` today? Spec assumes health-check and connector-registry; Gate 2 grep produces the canonical list.
 2. **[GATE-2 CONFIRMATION REQUIRED]** Does `src/gateway_v2/` already contain any partial `package.json` or `tsconfig.json` from a prior chunk? If so, Gate 2 extends; if not, Gate 2 creates from scratch.
 3. **[GATE-2 CONFIRMATION REQUIRED]** What is the current `Dockerfile` structure for aim-node, and where is the right insertion point for the multi-stage builder?
-4. **[GATE-2 CONFIRMATION REQUIRED]** Does the install image already have Node available, or does Stage 2 need `apk add nodejs`?
-5. **[GATE-2 CONFIRMATION REQUIRED]** What is the existing install-verification script? AC8 updates it; Gate 2 needs to know the entry point.
-6. ESM vs CJS: how are TS entry-points invoked in aim-node? `require('gateway_v2/health-check')` (CJS) or `import` from another TS module (ESM)? Pin the module system based on this answer.
-7. Branch-protection coordination: is BQ-CI-MERGE-GATE-BRANCH-PROTECTION-S574 follow-ups landing before or after this BQ ships? Affects whether the CI gate is advisory or required at ship time.
+4. **[GATE-2 CONFIRMATION REQUIRED]** What is the existing install-verification script? AC8 updates it; Gate 2 needs to know the entry point.
+5. ESM vs CJS: how are TS entry-points invoked in aim-node? `require('gateway_v2/health-check')` (CJS) or `import` from another TS module (ESM)? Pin the module system based on this answer.
+6. Branch-protection coordination: is BQ-CI-MERGE-GATE-BRANCH-PROTECTION-S574 follow-ups landing before or after this BQ ships? Affects whether the CI gate is advisory or required at ship time.
 
-## §9 Compat & migration
+## §10 Compat & migration
 
 **Existing TS files:** No rewrite needed; they're fine as-is. Gate 2 just adds the build path around them.
 
