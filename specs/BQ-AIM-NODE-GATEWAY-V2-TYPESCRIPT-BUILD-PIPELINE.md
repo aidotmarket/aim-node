@@ -1,8 +1,9 @@
-# BQ-AIM-NODE-GATEWAY-V2-TYPESCRIPT-BUILD-PIPELINE — Gate 1 Design Spec
+# BQ-AIM-NODE-GATEWAY-V2-TYPESCRIPT-BUILD-PIPELINE — Gate 1 Design Spec (v2)
 
 **Status:** Gate 1 design-only · **Priority:** P1 · **Pillar:** AIM-Node (product)
 **Filed:** S561 (2026-05-05) · **Authored:** S609.W round 4 · **Branch:** spec/bq-aim-node-gateway-v2-typescript-build-pipeline-gate1
 **Sibling context:** S561 cross-review of gateway packaging — AG + DS both raised HIGH finding on TS files lacking build path; documentation fold landed in that chunk; this BQ holds the structural fix.
+**Fold history:** v1 = Worker S609.W round 4 ship at SHA 7366fb62. v2 = Worker S610.W round 2 R2 fold manifest + Primary S610 drain. MP R1 (task 1b72eee6) returned APPROVE_WITH_MANDATES with 7 substantive findings (3 HIGH + 2 MEDIUM + 2 LOW) and proposed revisions inline; folded verbatim per stash manifest. AG R1 (task 1dd1beba) returned ReadTimeout — pending re-dispatch; supplement if extras surface.
 
 ## §0 Honest posture
 
@@ -46,7 +47,11 @@ The new buyer/builder gateway packaging (shipped at AIM-Node Gateway V2 Chunks 1
   "name": "aim-node-gateway-v2",
   "version": "0.1.0",
   "private": true,
-  "main": "dist/index.js",
+  "exports": {
+    "./health": "./dist/health.js",
+    "./connector_registry": "./dist/connector_registry.js",
+    "./connectors/runtime": "./dist/connectors/runtime.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
@@ -56,6 +61,9 @@ The new buyer/builder gateway packaging (shipped at AIM-Node Gateway V2 Chunks 1
   "devDependencies": {
     "typescript": "^5.4.0",
     "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
 ```
@@ -70,7 +78,7 @@ The new buyer/builder gateway packaging (shipped at AIM-Node Gateway V2 Chunks 1
     "target": "ES2022",
     "module": "commonjs",
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -78,8 +86,8 @@ The new buyer/builder gateway packaging (shipped at AIM-Node Gateway V2 Chunks 1
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts"]
 }
 ```
 
@@ -113,12 +121,15 @@ COPY src/gateway_v2/ ./
 RUN npm run build
 
 # Stage 2 — runtime (existing aim-node image stage)
-FROM <existing-aim-node-base-image>
-# ... existing aim-node Dockerfile content ...
-COPY --from=builder /build/dist /app/gateway_v2/dist
+FROM python:3.11-slim-bookworm
+# ... existing aim-node Dockerfile content (lines 41-52) ...
+RUN apt-get update && apt-get install -y --no-install-recommends curl nodejs
+COPY --from=builder /build/dist /usr/local/share/aim-node/gateway_v2/dist
+# ... ownership finalization continues near Dockerfile:54-68 ...
+# NOTE: Gate 2 builder adds apt-list cleanup per project Docker hygiene policy
 ```
 
-**[GATE-2 CONFIRMATION REQUIRED]** Gate 2 builder reads the current `Dockerfile`, identifies the right insertion point, and confirms whether the install image already has Node available. If not, Stage 2 needs `apk add nodejs` or equivalent.
+**MP R1 inventory (S610 R2 fold):** Runtime image is `python:3.11-slim-bookworm` at `Dockerfile:41-52`. Node is only present in the frontend build stage at `Dockerfile:12-21`. To support compiled TS at runtime, the install image needs Node added via Debian apt (NOT Alpine apk): `apt-get install -y --no-install-recommends curl nodejs`. Add a dedicated gateway TS build stage AFTER the frontend stage. Copy compiled artifacts to `/usr/local/share/aim-node/gateway_v2/dist` BEFORE ownership finalization (insertion point near `Dockerfile:54-68`). This runtime-artifact path is canonical for the install and is referenced by sec 6 AC8.
 
 **`.dockerignore` update:** Add `node_modules`, `dist`, `*.tsbuildinfo` to avoid copying local build state into the build context.
 
@@ -133,7 +144,7 @@ COPY --from=builder /build/dist /app/gateway_v2/dist
 **Checks:**
 1. **Build success:** Run `npm run build` from `src/gateway_v2/`; fail the workflow on any compilation error.
 2. **Type-check pass:** Run `npm run build:check`; fail on any type error.
-3. **Source-without-artifact detection:** Grep `git ls-files src/gateway_v2/**/*.ts` filtered against `tsconfig.json` `exclude` patterns; for each remaining `.ts` file, confirm a corresponding `.js` exists in `dist/` after `npm run build`. Any orphan `.ts` (source without artifact) fails the workflow.
+3. **Source-without-artifact detection (MP R1 fold S610 R2):** Compare every git-tracked non-test `src/gateway_v2/**/*.ts` against emitted JS after `npm run build`. Use `tsc --listEmittedFiles` plus path mapping from `rootDir`/`outDir` to derive the expected emission set. Exclusions only via a tiny explicit allowlist with per-entry comment explaining why. Default allowlist empty; Gate 2 adds entries with a one-line rationale only when a file genuinely should not emit (e.g., `.d.ts`-only declarations or `ts-node`-only build helpers). Any orphan `.ts` (source without artifact) outside the allowlist fails the workflow.
 4. **package.json + tsconfig.json presence check:** If any `.ts` file exists under `src/gateway_v2/` but `package.json` or `tsconfig.json` is missing, fail the workflow with a clear error pointing at this BQ as the canonical fix.
 
 **Trigger:** PR open + push to main.
@@ -148,8 +159,8 @@ COPY --from=builder /build/dist /app/gateway_v2/dist
 4. **AC4 — Dockerfile builds compiled JS into install image:** Multi-stage Dockerfile compiles TS at image-build time; install image contains compiled `.js` in the correct path; raw `.ts` source does NOT need to ship in the install image (optional: ship for debugging via build-arg).
 5. **AC5 — CI gate fails on orphan TS source:** PR that adds a `.ts` file under `src/gateway_v2/` without producing a corresponding `.js` artifact via the build fails the workflow with a clear error message naming this BQ.
 6. **AC6 — CI gate fails on missing package.json or tsconfig.json:** PR that introduces `.ts` files into a directory lacking either config file fails the workflow.
-7. **AC7 — Strict mode honored OR transitional relaxation documented:** If existing TS source passes strict mode, ship as-is. If not, Gate 2 builder either fixes violations or files a follow-up BQ to tighten; Gate 1 spec records the choice.
-8. **AC8 — Install verification exercises runtime components:** Install-verification script (existing in aim-node) is updated to actually invoke at least one TS-component entrypoint (health check or connector-registry probe) and fail on runtime error. Catches the false-positive class this BQ filed against.
+7. **AC7 — Strict mode enabled with `receipt.ts:134` cast resolved (MP R1 fold S610 R2):** TypeScript strict mode (`strict: true` in tsconfig) is enabled. Prior to enabling, `src/gateway_v2/receipt.ts:134` is updated to replace the `Record<string, unknown>` cast to `MeteringReceiptSummary` with either (a) a typed-narrowing pattern via a runtime guard function, OR (b) an explicit `as unknown as MeteringReceiptSummary` cast with a TODO comment referencing this BQ — Gate 2 picks. `tsc --strict --noEmit` against the source tree returns zero errors. Pre-Gate-2 MP R1 evidence (task `1b72eee6`) confirmed strict mode does NOT pass as-is on v1.
+8. **AC8 — `install.sh:88-110` verification block exercises compiled TS (MP R1 fold S610 R2):** The verification block at `install.sh:88-110`, after the existing management health curl, runs a container-side Node probe: `docker exec <container> node -e "require('/usr/local/share/aim-node/gateway_v2/dist/health'); require('/usr/local/share/aim-node/gateway_v2/dist/connector_registry')"`. Both requires must resolve and load cleanly; non-zero exit fails the install. The probe path matches the runtime artifact path locked in sec 4 (`/usr/local/share/aim-node/gateway_v2/dist`).
 
 ## §7 Risks
 
