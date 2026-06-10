@@ -231,6 +231,7 @@ def _json_or_text(response: Any) -> Any:
 
 
 def _load_backend_e2e_module() -> Any:
+    pytest.importorskip("fastapi")
     module_path = BACKEND_ROOT / "tests/gateway_v2/test_e2e_paid_buyer_agent_flow.py"
     spec = importlib.util.spec_from_file_location("backend_gateway_v2_e2e", module_path)
     assert spec is not None and spec.loader is not None
